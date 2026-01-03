@@ -10,13 +10,16 @@ const store = new Store();
 app.disableHardwareAcceleration();
 
 let mainWindow;
-let activeProcess = null;
+const terminalProcesses = new Map();
+let terminalCwds = new Map(); // Track CWD per terminal
 
 function createWindow() {
     mainWindow = new BrowserWindow({
         width: 1200,
         height: 800,
         icon: path.join(__dirname, 'assets/logo.png'),
+        show: false,
+        frame: false, // Make it frameless
         webPreferences: {
             preload: path.join(__dirname, 'preload.js'),
             contextIsolation: true,
@@ -27,11 +30,18 @@ function createWindow() {
 
     mainWindow.loadFile('index.html');
 
-    // Open DevTools in dev mode (commented out for production feel)
-    // mainWindow.webContents.openDevTools();
+    mainWindow.once('ready-to-show', () => {
+        mainWindow.show();
+    });
+
+    mainWindow.on('closed', () => {
+        mainWindow = null;
+    });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+    createWindow();
+});
 
 app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();
@@ -115,17 +125,19 @@ ipcMain.handle('create-folder', async (event, folderPath) => {
     return true;
 });
 
-const runCommand = (command, resolve) => {
+const runCommand = (command, terminalId, resolve) => {
     const workspace = store.get('workspacePath');
+    let cwd = terminalCwds.get(terminalId) || workspace;
+
     const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/bash';
     const args = process.platform === 'win32' ? ['/c', command] : ['-c', command];
 
     const proc = require('child_process').spawn(shell, args, {
-        cwd: workspace,
+        cwd: cwd || workspace,
         env: { ...process.env, FORCE_COLOR: '1' }
     });
 
-    activeProcess = proc;
+    terminalProcesses.set(terminalId, proc);
 
     let stdout = '';
     let stderr = '';
@@ -133,17 +145,19 @@ const runCommand = (command, resolve) => {
     proc.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
-        if (mainWindow) mainWindow.webContents.send('terminal-data', chunk);
+        if (mainWindow) mainWindow.webContents.send('terminal-data', { terminalId, data: chunk });
     });
 
     proc.stderr.on('data', (data) => {
         const chunk = data.toString();
         stderr += chunk;
-        if (mainWindow) mainWindow.webContents.send('terminal-data', chunk);
+        if (mainWindow) mainWindow.webContents.send('terminal-data', { terminalId, data: chunk });
     });
 
     proc.on('close', (code) => {
-        if (activeProcess === proc) activeProcess = null;
+        if (terminalProcesses.get(terminalId) === proc) {
+            terminalProcesses.delete(terminalId);
+        }
         if (resolve) {
             resolve({
                 success: code === 0,
@@ -158,12 +172,10 @@ const runCommand = (command, resolve) => {
 };
 
 // Shell
-ipcMain.handle('execute-command', (event, command) => {
+ipcMain.handle('execute-command', (event, { terminalId, command }) => {
     return new Promise((resolve) => {
-        const proc = runCommand(command, resolve);
+        const proc = runCommand(command, terminalId, resolve);
 
-        // If the command is a long-running one (like npm start, vite, etc.), 
-        // we might want to resolve immediately or after a short delay.
         const longRunningCmds = ['npm start', 'npm run dev', 'vite', 'serve', 'node '];
         if (longRunningCmds.some(c => command.includes(c))) {
             setTimeout(() => {
@@ -173,15 +185,54 @@ ipcMain.handle('execute-command', (event, command) => {
     });
 });
 
-ipcMain.handle('terminal-input', (event, input) => {
+ipcMain.handle('terminal-input', (event, { terminalId, input }) => {
+    const trimmedInput = input.trim();
+    const workspace = store.get('workspacePath');
+    let cwd = terminalCwds.get(terminalId) || workspace;
+
+    // Simple CD tracking
+    if (trimmedInput.startsWith('cd ')) {
+        const target = trimmedInput.slice(3).trim().replace(/^["']|["']$/g, '');
+        try {
+            const newPath = path.resolve(cwd, target);
+            if (fs.existsSync(newPath) && fs.statSync(newPath).isDirectory()) {
+                terminalCwds.set(terminalId, newPath);
+            }
+        } catch (e) {
+            console.error("Failed to resolve CD path", e);
+        }
+    }
+
+    const activeProcess = terminalProcesses.get(terminalId);
     if (activeProcess && activeProcess.stdin.writable) {
         activeProcess.stdin.write(input + '\n');
         return true;
     } else {
-        // Run as a standalone command if no process is active
-        runCommand(input);
+        runCommand(input, terminalId);
         return true;
     }
+});
+
+ipcMain.handle('get-terminal-cwd', (event, terminalId) => {
+    return terminalCwds.get(terminalId) || store.get('workspacePath');
+});
+
+ipcMain.handle('set-terminal-cwd', (event, { terminalId, newPath }) => {
+    if (fs.existsSync(newPath) && fs.statSync(newPath).isDirectory()) {
+        terminalCwds.set(terminalId, newPath);
+        return { success: true, path: newPath };
+    }
+    return { success: false, error: "Invalid directory path" };
+});
+
+ipcMain.handle('close-terminal', (event, terminalId) => {
+    const proc = terminalProcesses.get(terminalId);
+    if (proc) {
+        proc.kill();
+        terminalProcesses.delete(terminalId);
+    }
+    terminalCwds.delete(terminalId);
+    return true;
 });
 
 // Token Usage
@@ -205,7 +256,33 @@ ipcMain.handle('get-sessions', () => {
 });
 
 ipcMain.handle('save-sessions', (event, sessions) => {
-    // Keep only the last 50 sessions to prevent store bloat
-    store.set('sessions', sessions.slice(0, 50));
+    store.set('sessions', sessions);
     return true;
+});
+
+// Chat Persistence
+ipcMain.handle('get-chats', () => {
+    return store.get('chats', []);
+});
+
+ipcMain.handle('save-chats', (event, chats) => {
+    store.set('chats', chats);
+    return true;
+});
+
+// Window Controls
+ipcMain.handle('window-minimize', () => {
+    mainWindow.minimize();
+});
+
+ipcMain.handle('window-maximize', () => {
+    if (mainWindow.isMaximized()) {
+        mainWindow.unmaximize();
+    } else {
+        mainWindow.maximize();
+    }
+});
+
+ipcMain.handle('window-close', () => {
+    mainWindow.close();
 });
