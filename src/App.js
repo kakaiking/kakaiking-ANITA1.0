@@ -121,22 +121,36 @@ const Icon = ({ name, size = 16, className = '', style = {}, ...props }) => {
     );
 };
 
-const Markdown = ({ content }) => {
+const Markdown = ({ content, timestamp }) => {
     const html = useMemo(() => {
+        if (!content) return '';
         if (!window.marked || !window.DOMPurify) return content;
         try {
-            const rawHtml = window.marked.parse(content);
+            let rawHtml = window.marked.parse(content);
+
+            if (timestamp) {
+                // Inject timestamp into the last paragraph for efficient space usage
+                const lastPIndex = rawHtml.lastIndexOf('</p>');
+                const timestampHtml = `<span class="message-time">${timestamp}</span>`;
+
+                if (lastPIndex !== -1) {
+                    rawHtml = rawHtml.substring(0, lastPIndex) + timestampHtml + rawHtml.substring(lastPIndex);
+                } else {
+                    rawHtml += timestampHtml;
+                }
+            }
+
             return window.DOMPurify.sanitize(rawHtml, {
-                ADD_TAGS: ['button'],
+                ADD_TAGS: ['button', 'span'],
                 ADD_ATTR: ['data-code', 'class'],
                 FORBID_TAGS: ['style', 'script', 'iframe', 'object', 'embed'],
-                FORBID_ATTR: ['id', 'name'] // Prevent clashing with IDE elements
+                FORBID_ATTR: ['id', 'name']
             });
         } catch (e) {
             console.error("Markdown parse error", e);
             return content;
         }
-    }, [content]);
+    }, [content, timestamp]);
 
     const handleCopy = (e) => {
         const btn = e.target.closest('.copy-code-btn');
@@ -225,6 +239,59 @@ class AIService {
     }
 }
 
+const CustomSelect = ({ value, onChange, options }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    const containerRef = useRef(null);
+
+    useEffect(() => {
+        const handleClickOutside = (event) => {
+            if (containerRef.current && !containerRef.current.contains(event.target)) {
+                setIsOpen(false);
+            }
+        };
+        document.addEventListener('mousedown', handleClickOutside);
+        return () => document.removeEventListener('mousedown', handleClickOutside);
+    }, []);
+
+    const selectedOption = options.find(opt => opt.value === value);
+
+    return (
+        <div className="custom-select-container" ref={containerRef}>
+            <button
+                className={`custom-select-trigger ${isOpen ? 'open' : ''}`}
+                onClick={() => setIsOpen(!isOpen)}
+            >
+                <Icon name={selectedOption.icon} size={14} style={{ marginRight: 6 }} />
+                <span>{selectedOption.label}</span>
+                <Icon name={isOpen ? ChevronUp : ChevronDown} size={12} style={{ marginLeft: 6, opacity: 0.5 }} />
+            </button>
+            {isOpen && (
+                <div className="custom-select-options glass">
+                    {options.map(opt => (
+                        <div
+                            key={opt.value}
+                            className={`custom-select-option ${value === opt.value ? 'active' : ''}`}
+                            onClick={() => {
+                                onChange(opt.value);
+                                setIsOpen(false);
+                            }}
+                        >
+                            <div style={{ marginRight: 12, display: 'flex', alignItems: 'center', opacity: value === opt.value ? 1 : 0.6 }}>
+                                <Icon name={opt.icon} size={18} />
+                            </div>
+                            <div className="option-info">
+                                <div className="option-label">{opt.label}</div>
+                                <div className="option-desc">{opt.description}</div>
+                            </div>
+                            {value === opt.value && <Icon name={CheckCircle} size={14} className="active-check" />}
+                        </div>
+                    ))}
+                </div>
+            )}
+        </div>
+    );
+};
+
 const App = () => {
     const [workspace, setWorkspace] = useState(null);
     const [files, setFiles] = useState([]);
@@ -249,18 +316,19 @@ const App = () => {
         cwdInput: ''
     }]);
     const [activeTerminalId, setActiveTerminalId] = useState('t1');
-    const [composerMode, setComposerMode] = useState('agent');
+    const [composerMode, setComposerMode] = useState('chat');
 
     // Layout State
     const [isLeftSidebarVisible, setIsLeftSidebarVisible] = useState(true);
     const [isRightPanelVisible, setIsRightPanelVisible] = useState(true);
-    const [isTerminalVisible, setIsTerminalVisible] = useState(true);
+    const [isTerminalVisible, setIsTerminalVisible] = useState(false);
     const [sidebarWidth, setSidebarWidth] = useState(260);
     const [rightPanelWidth, setRightPanelWidth] = useState(380);
     const [terminalHeight, setTerminalHeight] = useState(240);
     const [resizing, setResizing] = useState(null); // 'left', 'right', 'bottom'
     const [isHistorySidebarVisible, setIsHistorySidebarVisible] = useState(false);
-    const [isCentralPanelVisible, setIsCentralPanelVisible] = useState(true);
+    const [isCentralPanelVisible, setIsCentralPanelVisible] = useState(false);
+    const [isTerminalHeaderExpanded, setIsTerminalHeaderExpanded] = useState(true);
     const abortControllerRef = useRef(null);
 
     const handleStop = () => {
@@ -311,29 +379,21 @@ const App = () => {
 
             const savedSessions = await window.api.getSessions();
             if (savedSessions) setSessions(savedSessions);
+            const savedChats = await window.api.getChats() || [];
 
-            const savedChats = await window.api.getChats();
-            if (savedChats && savedChats.length > 0) {
-                setChats(savedChats);
+            // Always start with a fresh chat on launch
+            const newChatId = 'c-' + Date.now();
+            const freshChat = {
+                id: newChatId,
+                title: 'New Chat',
+                messages: [],
+                createdAt: Date.now(),
+                lastUpdatedAt: Date.now()
+            };
 
-                // Load open tabs from localStorage
-                const savedOpenIds = window.localStorage.getItem('openChatIds');
-                if (savedOpenIds) {
-                    try {
-                        const parsed = JSON.parse(savedOpenIds);
-                        // Filter out any IDs that might have been deleted but are still in localStorage
-                        const validIds = parsed.filter(id => savedChats.some(c => c.id === id));
-                        setOpenChatIds(validIds.length > 0 ? validIds : [savedChats[0].id]);
-                        setActiveChatId(validIds.includes(activeChatId) ? activeChatId : (validIds[0] || savedChats[0].id));
-                    } catch (e) {
-                        setOpenChatIds([savedChats[0].id]);
-                        setActiveChatId(savedChats[0].id);
-                    }
-                } else {
-                    setOpenChatIds([savedChats[0].id]);
-                    setActiveChatId(savedChats[0].id);
-                }
-            }
+            setChats([...savedChats, freshChat]);
+            setOpenChatIds([newChatId]);
+            setActiveChatId(newChatId);
             setHistoryLoaded(true);
 
             if (!s || !s.apiKey) setShowSettings(true);
@@ -697,52 +757,58 @@ const App = () => {
         setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: updatedMessages, lastUpdatedAt: Date.now() } : c));
 
         try {
-            if (composerMode === 'agent') {
-                addLog(null, `Planner: analyzing user goal with context...`);
+            // Smart Logic: Detect intent based on user prompt and selected mode
+            addLog(null, `Processing ${composerMode} request...`);
 
-                const historyContext = updatedMessages
-                    .slice(-10)
-                    .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-                    .join('\n');
+            const systemInstruction = `You are a professional AI developer on Windows. 
+Your goal is to assist the user based on their current request: "${goal}"
 
-                const agentPrompt = `You are an expert coding agent. 
-Previous conversation context:
-${historyContext}
-
-Your current goal: "${goal}"
-
-The OS is Windows. 
-
-Based on the conversation history and the current goal, create a comprehensive plan.
-Respond ONLY with a JSON object:
-{ 
-  "plan": "detailed explanation of the summarized requirements and the implementation strategy", 
+RESPONSE OPTIONS:
+1. If the user wants to implement code, modify files, or run commands, respond ONLY with a JSON PLAN:
+{
+  "plan": "detailed explanation of what you will do",
   "tasks": [
-    { 
-      "id": 1, 
-      "description": "Short summary of the task", 
-      "type": "file_edit", 
-      "path": "folder/filename.ext", 
-      "content": "Fully written code for file_edit tasks" 
-    },
-    { 
-      "id": 2, 
-      "description": "Install dependencies", 
-      "type": "terminal", 
-      "command": "npm install package-name" 
-    }
-  ] 
-}`;
+    { "id": 1, "description": "...", "type": "file_edit", "path": "...", "content": "..." },
+    { "id": 2, "description": "...", "type": "terminal", "command": "..." }
+  ]
+}
 
-                const response = await ai.chat([{ role: "user", content: agentPrompt }], signal);
-                let proposal;
+2. If the user is just chatting, asking a question, or providing feedback, respond with a normal conversational MARKDOWN message.
+
+AUTO-DETECTION:
+- If the user explicitly asks for implementation ("build", "create", "fix", "add"), use the JSON PLAN.
+- If the user asks a question ("how", "why", "what") or greets you, use MARKDOWN.
+- Current User Preference: ${composerMode === 'agent' ? 'Favor execution/implementation' : 'Favor discussion/explanation'}.
+`;
+
+            const messagesForAI = updatedMessages
+                .filter(m => m.content)
+                .map(m => ({ role: m.role, content: m.content }));
+
+            // Add the system instruction for this specific call
+            const finalMessages = [{ role: 'system', content: systemInstruction }, ...messagesForAI];
+
+            const response = await ai.chat(finalMessages, signal);
+            const trimmedResponse = response.replace(/```json|```/g, "").trim();
+
+            let proposal = null;
+            let isPlan = false;
+
+            // Attempt to parse as plan if it looks like JSON
+            if (trimmedResponse.startsWith('{') && trimmedResponse.includes('"tasks"')) {
                 try {
-                    proposal = JSON.parse(response.replace(/```json|```/g, "").trim());
+                    const parsed = JSON.parse(trimmedResponse);
+                    if (parsed.tasks && Array.isArray(parsed.tasks)) {
+                        proposal = parsed;
+                        isPlan = true;
+                    }
                 } catch (e) {
-                    console.error("Failed to parse AI response as JSON", response);
-                    throw new Error("AI response was not valid JSON. Please try again.");
+                    console.warn("AI returned JSON-like text but it failed to parse. Falling back to chat.");
                 }
+            }
 
+            if (isPlan) {
+                // Handling Agent Session
                 const newSession = {
                     id: Date.now(),
                     chatId: activeChatId,
@@ -766,22 +832,9 @@ Respond ONLY with a JSON object:
                 };
 
                 setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: [...updatedMessages, summaryMsg] } : c));
-                addLog(null, `Planner: proposal generated inline.`);
+                addLog(null, `Planner: execution plan generated.`);
             } else {
-                // Chat Mode
-                const loadingMsg = {
-                    id: 'l-' + Date.now(),
-                    role: 'assistant',
-                    content: '...',
-                    isLoading: true,
-                    timestamp: new Date().toLocaleTimeString()
-                };
-
-                setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: [...updatedMessages, loadingMsg] } : c));
-                setActiveTab('chat');
-
-                const response = await ai.chat(updatedMessages.map(m => ({ role: m.role, content: m.content })), signal);
-
+                // Handling Regular Chat
                 const assistantMsg = {
                     id: 'a-' + Date.now(),
                     role: 'assistant',
@@ -792,14 +845,12 @@ Respond ONLY with a JSON object:
                 setChats(prev => prev.map(c => {
                     if (c.id === activeChatId) {
                         const newMessages = [...updatedMessages.filter(m => !m.isLoading), assistantMsg];
-                        let newTitle = c.title;
 
-                        // Only rename if it's the first exchange and title is still default
+                        // Handle Chat Title Generation
                         const isOriginalDefault = c.title === 'New Chat' || c.title.startsWith('New Chat(');
                         const userMessages = newMessages.filter(m => m.role === 'user');
 
                         if (isOriginalDefault && userMessages.length === 1) {
-                            // Trigger background title generation
                             generateChatTitle(userMessages[0].content).then(generatedTitle => {
                                 if (generatedTitle) {
                                     setChats(latestChats => latestChats.map(lc =>
@@ -808,7 +859,6 @@ Respond ONLY with a JSON object:
                                 }
                             });
                         }
-
                         return { ...c, messages: newMessages };
                     }
                     return c;
@@ -1027,7 +1077,13 @@ User Message: "${userPrompt}"`;
                             </button>
                             <button
                                 className={`btn-icon-sm ${isTerminalVisible ? 'active' : ''}`}
-                                onClick={() => setIsTerminalVisible(!isTerminalVisible)}
+                                onClick={() => {
+                                    const newVisible = !isTerminalVisible;
+                                    setIsTerminalVisible(newVisible);
+                                    if (newVisible && !isCentralPanelVisible) {
+                                        setIsCentralPanelVisible(true);
+                                    }
+                                }}
                                 title="Toggle Terminal"
                             >
                                 <Icon name={PanelBottom} size={14} />
@@ -1041,7 +1097,13 @@ User Message: "${userPrompt}"`;
                             </button>
                             <button
                                 className={`btn-icon-sm ${!isCentralPanelVisible ? 'active' : ''}`}
-                                onClick={() => setIsCentralPanelVisible(!isCentralPanelVisible)}
+                                onClick={() => {
+                                    const willBeExpanded = isCentralPanelVisible; // If true, it's about to become false (expanded)
+                                    setIsCentralPanelVisible(!isCentralPanelVisible);
+                                    if (willBeExpanded) {
+                                        setIsTerminalVisible(false);
+                                    }
+                                }}
                                 title={isCentralPanelVisible ? "Expand Chat" : "Show Editor"}
                             >
                                 <Icon name={isCentralPanelVisible ? Maximize2 : Minimize2} size={14} />
@@ -1137,27 +1199,42 @@ User Message: "${userPrompt}"`;
                             className="bottom-panel"
                             style={{ height: terminalHeight, display: isTerminalVisible ? 'flex' : 'none' }}
                         >
-                            <div className="terminal-tabs">
+                            <div className="terminal-tabs" onMouseDown={onResizerMouseDown('bottom')} style={{ cursor: 'row-resize' }}>
                                 {terminals.map((t, idx) => (
                                     <div
                                         key={t.id}
                                         className={`terminal-tab ${activeTerminalId === t.id ? 'active' : ''}`}
                                         onClick={() => setActiveTerminalId(t.id)}
+                                        onMouseDown={e => e.stopPropagation()}
                                     >
                                         <Icon name={Terminal} size={14} />
                                         <span>Terminal {idx + 1}</span>
                                         {terminals.length > 1 && (
-                                            <button className="close-tab" onClick={(e) => closeTerminal(t.id, e)}>
+                                            <button className="close-tab" onClick={(e) => closeTerminal(t.id, e)} onMouseDown={e => e.stopPropagation()}>
                                                 <Icon name={X} size={12} />
                                             </button>
                                         )}
                                     </div>
                                 ))}
-                                <button className="add-tab-btn" onClick={addTerminal} title="Add Terminal">
+                                <button className="add-tab-btn" onClick={addTerminal} title="Add Terminal" onMouseDown={e => e.stopPropagation()}>
                                     <Icon name={Plus} size={14} />
                                 </button>
+
+                                <div style={{ flex: 1 }} />
+                                <button
+                                    className={`terminal-header-toggle ${isTerminalHeaderExpanded ? 'expanded' : ''}`}
+                                    onClick={() => setIsTerminalHeaderExpanded(!isTerminalHeaderExpanded)}
+                                    onMouseDown={e => e.stopPropagation()}
+                                    title={isTerminalHeaderExpanded ? "Collapse Header" : "Expand Header"}
+                                >
+                                    <Icon name={ChevronDown} size={16} />
+                                </button>
                             </div>
-                            <div className="terminal-header" style={{ cursor: 'row-resize', userSelect: 'none' }} onMouseDown={onResizerMouseDown('bottom')}>
+                            <div
+                                className={`terminal-header ${isTerminalHeaderExpanded ? 'visible' : 'hidden'}`}
+                                style={{ cursor: 'row-resize', userSelect: 'none' }}
+                                onMouseDown={onResizerMouseDown('bottom')}
+                            >
                                 <div className="terminal-header-left">
                                     <input
                                         className="terminal-cwd-box"
@@ -1227,9 +1304,7 @@ User Message: "${userPrompt}"`;
 
                 <aside className={`right-panel ${isRightPanelVisible ? '' : 'collapsed'} ${!isCentralPanelVisible ? 'expanded' : ''}`} style={{ width: (isRightPanelVisible && isCentralPanelVisible) ? rightPanelWidth : (isRightPanelVisible ? 'auto' : 0) }}>
                     {isRightPanelVisible && isCentralPanelVisible && <div className="resizer-handle-left" onMouseDown={onResizerMouseDown('right')} style={{ position: 'absolute', left: -3, top: 0, bottom: 0, width: 6, cursor: 'col-resize', zIndex: 100 }} />}
-                    <div className="sidebar-header">
-                        <span>CONTEXT & CHAT</span>
-                    </div>
+
 
                     <div className="scrollable" style={{ background: 'var(--bg-secondary)' }}>
                         <div className="chat-view">
@@ -1333,10 +1408,10 @@ User Message: "${userPrompt}"`;
                             )}
 
                             {(!activeChat || activeChat.messages.length === 0) ? (
-                                <div className="welcome-msg" style={{ padding: 24, textAlign: 'center' }}>
-                                    <h2 style={{ fontFamily: 'Outfit', fontSize: 20, marginBottom: 8 }}>Hello!</h2>
-                                    <p style={{ color: 'var(--text-secondary)', fontSize: 13, lineHeight: 1.5 }}>
-                                        I'm your agentic assistant. Tell me what you'd like to build and I'll create a plan to implement it.
+                                <div className="welcome-msg" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32, textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                    <h2 style={{ fontFamily: 'Outfit', fontSize: 24, marginBottom: 12, color: 'var(--text-primary)' }}>Hello!</h2>
+                                    <p style={{ fontSize: 14, lineHeight: 1.6, maxWidth: '500px' }}>
+                                        I'm your A.N.I.T.A (Advanced Neuro-Intelligence Task Assistant).<br /> Tell me what you'd like to build and I'll help you achieve it in a jiffy😉.
                                     </p>
                                 </div>
                             ) : (
@@ -1405,12 +1480,14 @@ User Message: "${userPrompt}"`;
                                                     {m.isLoading ? (
                                                         <Icon name={Loader2} className="spin" size={16} />
                                                     ) : m.role === 'assistant' ? (
-                                                        <Markdown content={m.content} />
+                                                        <Markdown content={m.content} timestamp={m.timestamp} />
                                                     ) : (
-                                                        m.content
+                                                        <div className="user-message-flow">
+                                                            <span>{m.content}</span>
+                                                            <span className="message-time">{m.timestamp}</span>
+                                                        </div>
                                                     )}
                                                 </div>
-                                                <div className="message-time">{m.timestamp}</div>
                                             </div>
                                         );
                                     })}
@@ -1444,14 +1521,24 @@ User Message: "${userPrompt}"`;
                             />
                             <div className="composer-footer">
                                 <div className="composer-mode-container">
-                                    <select
-                                        className="composer-mode-select"
+                                    <CustomSelect
                                         value={composerMode}
-                                        onChange={(e) => setComposerMode(e.target.value)}
-                                    >
-                                        <option value="chat">Chat</option>
-                                        <option value="agent">Agent</option>
-                                    </select>
+                                        onChange={setComposerMode}
+                                        options={[
+                                            {
+                                                value: 'chat',
+                                                label: 'Chat',
+                                                icon: MessageSquare,
+                                                description: 'Direct AI chat for questions and guidance'
+                                            },
+                                            {
+                                                value: 'agent',
+                                                label: 'Agent',
+                                                icon: CodeIcon,
+                                                description: 'Powerful automation for code implementation'
+                                            }
+                                        ]}
+                                    />
                                 </div>
                                 <button className="send-btn" onClick={handleSubmitProposal}>
                                     {isPlanning ? <Icon name={Square} size={14} fill="currentColor" /> : <Icon name={Send} size={16} />}
