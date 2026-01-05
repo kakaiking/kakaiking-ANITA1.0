@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('api', {
     writeFile: (path, content) => ipcRenderer.invoke('write-file', path, content),
     deletePath: (path) => ipcRenderer.invoke('delete-path', path),
     createFolder: (path) => ipcRenderer.invoke('create-folder', path),
+    renamePath: (oldPath, newPath) => ipcRenderer.invoke('rename-path', oldPath, newPath),
 
     // Shell
     executeCommand: (terminalId, command) => ipcRenderer.invoke('execute-command', { terminalId, command }),
@@ -40,4 +41,22 @@ contextBridge.exposeInMainWorld('api', {
 
     // Events
     onTerminalData: (callback) => ipcRenderer.on('terminal-data', (event, { terminalId, data }) => callback({ terminalId, data })),
+
+    // Together Proxy
+    togetherProxyChat: (data) => ipcRenderer.invoke('together-proxy-chat', data),
+    onTogetherChunk: (requestId, callback) => {
+        const listener = (event, chunk) => callback(chunk);
+        ipcRenderer.on(`together-chunk-${requestId}`, listener);
+        return () => ipcRenderer.removeListener(`together-chunk-${requestId}`, listener);
+    },
+    onTogetherDone: (requestId, callback) => {
+        const listener = () => callback();
+        ipcRenderer.once(`together-done-${requestId}`, listener);
+        return () => ipcRenderer.removeListener(`together-done-${requestId}`, listener);
+    },
+    onTogetherError: (requestId, callback) => {
+        const listener = (event, err) => callback(err);
+        ipcRenderer.once(`together-error-${requestId}`, listener);
+        return () => ipcRenderer.removeListener(`together-error-${requestId}`, listener);
+    }
 });

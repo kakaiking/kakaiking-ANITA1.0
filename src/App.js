@@ -30,59 +30,344 @@ const History = 'history';
 const Maximize2 = 'maximize-2';
 const Minimize2 = 'minimize-2';
 const Minus = 'minus';
+const MoreHorizontal = 'more-horizontal';
+const FolderPlus = 'folder-plus';
+const FilePlus = 'file-plus';
+const FolderIcon = 'folder';
+const Type = 'type';
+const Brain = 'brain';
+const Sparkles = 'sparkles';
+const Copy = 'copy';
 
 const getFileIcon = (name) => {
+    const lowerName = name.toLowerCase();
     const ext = name.split('.').pop().toLowerCase();
+
+    // Exact file matches
+    if (lowerName === 'package.json') return { name: 'package', color: '#0dc1d8' };
+    if (lowerName === 'package-lock.json') return { name: 'package-search', color: '#0dc1d8' };
+    if (lowerName === '.gitignore') return { name: 'git-branch', color: '#f05032' };
+    if (lowerName.startsWith('readme')) return { name: 'book-open', color: '#0085ff' };
+
     switch (ext) {
         case 'js':
+            return { name: 'file-text', color: '#f7df1e' }; // JS icon style
         case 'jsx':
+            return { name: 'code-2', color: '#61dafb' };
         case 'ts':
+            return { name: 'file-text', color: '#3178c6' };
         case 'tsx':
-            return { name: CodeIcon, color: '#f7df1e' };
+            return { name: 'code-2', color: '#3178c6' };
         case 'html':
+        case 'xml':
             return { name: 'code', color: '#e34f26' };
         case 'css':
-            return { name: 'hash', color: '#1572b6' };
+        case 'scss':
+        case 'less':
+            return { name: 'code', color: '#264de4' };
         case 'json':
-            return { name: 'database', color: '#f1e05a' };
+            return { name: 'braces', color: '#cbcb41' };
         case 'py':
             return { name: 'terminal', color: '#3776ab' };
         case 'md':
-            return { name: 'file-text', color: '#ffffff' };
+            return { name: 'file-text', color: '#0085ff' };
+        case 'png':
+        case 'jpg':
+        case 'jpeg':
+            return { name: 'image', color: '#bc8cff' };
+        case 'svg':
+            return { name: 'file-svg', color: '#ffb13b' };
         default:
-            return { name: FileText, color: 'var(--text-secondary)' };
+            return { name: 'file-text', color: 'rgba(255,255,255,0.4)' };
     }
 };
 
-const FileTree = ({ files, expandedFolders, toggleFolder, openFile, activeFile, depth = 0 }) => {
+const getFolderIcon = (name, isExpanded) => {
+    const lowerName = name.toLowerCase();
+    let baseIcon = isExpanded ? 'folder-open' : 'folder';
+    let color = '#a3a3a3'; // VS Code muted default folder
+
+    if (lowerName === 'src') { baseIcon = 'folder-code'; color = '#ffb13b'; }
+    else if (lowerName === 'components') { baseIcon = 'folder-code'; color = '#61dafb'; }
+    else if (lowerName === 'hooks') { baseIcon = 'folder-git-2'; color = '#bc8cff'; }
+    else if (lowerName === 'services') { baseIcon = 'folder-cog'; color = '#3fb950'; }
+    else if (lowerName === 'styles') { baseIcon = 'folder-code'; color = '#1572b6'; }
+    else if (lowerName === 'assets') { baseIcon = 'folder-image'; color = '#bc8cff'; }
+    else if (lowerName === 'node_modules') { baseIcon = 'folder-tree'; color = '#3fb950'; }
+
+    return { name: baseIcon, color };
+};
+
+const Breadcrumbs = ({ activeFile, workspace }) => {
+    if (!activeFile || !workspace) return null;
+
+    // Normalize paths for comparison
+    const normalizedWorkspace = workspace.replace(/\\/g, '/');
+    const normalizedFile = activeFile.replace(/\\/g, '/');
+
+    const relativePath = normalizedFile.startsWith(normalizedWorkspace)
+        ? normalizedFile.substring(normalizedWorkspace.length).replace(/^\//, '')
+        : normalizedFile;
+
+    const parts = relativePath.split('/').filter(Boolean);
+    if (parts.length === 0) return null;
+
+    const fileName = parts.pop();
+    const icon = getFileIcon(fileName);
+
+    return (
+        <div className="editor-breadcrumbs">
+            <Icon name={icon.name} size={14} style={{ color: icon.color, marginRight: 8 }} />
+            {parts.map((part, i) => (
+                <React.Fragment key={i}>
+                    <span className="breadcrumb-part">{part}</span>
+                    <Icon name={ChevronRight} size={10} className="breadcrumb-separator" />
+                </React.Fragment>
+            ))}
+            <span className="breadcrumb-file">{fileName}</span>
+            <div className="breadcrumb-actions">
+                <Icon name={Sparkles} size={14} className="ai-sparkle-btn" title="AI Actions Available (Ctrl+E / Alt+/ for AI Suggest)" />
+            </div>
+        </div>
+    );
+};
+
+const getLanguageForFile = (fileName) => {
+    if (!window.monaco) return 'plaintext';
+    const ext = '.' + fileName.split('.').pop().toLowerCase();
+    const languages = window.monaco.languages.getLanguages();
+    const lang = languages.find(l => l.extensions && l.extensions.includes(ext));
+    return lang ? lang.id : 'plaintext';
+};
+
+const FileTree = ({
+    files,
+    expandedFolders,
+    toggleFolder,
+    openFile,
+    activeFile,
+    workspace,
+    depth = 0,
+    creatingItem,
+    setCreatingItem,
+    onCreateItem,
+    renamingItem,
+    setRenamingItem,
+    onRenameItem
+}) => {
+    const [menuOpen, setMenuOpen] = useState(null);
+    const [newItemName, setNewItemName] = useState('');
+    const [renameName, setRenameName] = useState('');
+    const inputRef = useRef(null);
+    const renameRef = useRef(null);
+
+    useEffect(() => {
+        if (creatingItem && inputRef.current) {
+            inputRef.current.focus();
+        }
+    }, [creatingItem]);
+
+    useEffect(() => {
+        if (renamingItem && renameRef.current) {
+            renameRef.current.focus();
+            renameRef.current.select();
+        }
+    }, [renamingItem]);
+
+    const handleCreateSubmit = (e) => {
+        if (e.key === 'Enter') {
+            if (newItemName.trim()) {
+                onCreateItem(creatingItem.parentPath, creatingItem.type, newItemName.trim());
+            }
+            setCreatingItem(null);
+            setNewItemName('');
+        } else if (e.key === 'Escape') {
+            setCreatingItem(null);
+            setNewItemName('');
+        }
+    };
+
+    const handleRenameSubmit = (e, oldPath) => {
+        if (e.key === 'Enter') {
+            if (renameName.trim() && renameName.trim() !== renamingItem.oldName) {
+                onRenameItem(oldPath, renameName.trim());
+            }
+            setRenamingItem(null);
+        } else if (e.key === 'Escape') {
+            setRenamingItem(null);
+        }
+    };
+
     return (
         <>
-            {files.map(file => (
-                <div key={file.path}>
-                    <div
-                        className={`file-tree-item ${activeFile === file.path ? 'active' : ''}`}
-                        onClick={() => file.isDirectory ? toggleFolder(file) : openFile(file)}
-                        style={{ paddingLeft: 20 + depth * 12 }}
-                    >
-                        <Icon
-                            name={file.isDirectory ? (expandedFolders.has(file.path) ? ChevronDown : ChevronRight) : FileText}
-                            size={14}
-                            style={{ marginRight: 8, opacity: activeFile === file.path ? 1 : 0.6 }}
-                        />
-                        <span>{file.name}</span>
+            {files.map(file => {
+                const isExpanded = expandedFolders.has(file.path);
+                const fileIcon = file.isDirectory
+                    ? getFolderIcon(file.name, isExpanded)
+                    : getFileIcon(file.name);
+
+                return (
+                    <div key={file.path} className="file-tree-item-container" style={{ '--depth': depth }}>
+                        <div
+                            className={`file-tree-item ${activeFile === file.path ? 'active' : ''}`}
+                            onClick={() => file.isDirectory ? toggleFolder(file) : openFile(file)}
+                            style={{ paddingLeft: depth * 12 + 2 }}
+                        >
+                            <div className="chevron-container">
+                                {file.isDirectory ? (
+                                    <Icon
+                                        name={isExpanded ? ChevronDown : ChevronRight}
+                                        size={12}
+                                        className="chevron"
+                                    />
+                                ) : (
+                                    <div className="file-tree-placeholder" />
+                                )}
+                            </div>
+
+                            <Icon
+                                name={fileIcon.name}
+                                size={16}
+                                style={{
+                                    color: fileIcon.color,
+                                    opacity: activeFile === file.path ? 1 : 0.9
+                                }}
+                                className="file-icon"
+                            />
+
+                            {renamingItem && renamingItem.path === file.path ? (
+                                <input
+                                    ref={renameRef}
+                                    className="file-tree-input"
+                                    value={renameName}
+                                    onChange={(e) => setRenameName(e.target.value)}
+                                    onKeyDown={(e) => handleRenameSubmit(e, file.path)}
+                                    onBlur={() => {
+                                        if (renameName.trim() && renameName.trim() !== renamingItem.oldName) {
+                                            onRenameItem(file.path, renameName.trim());
+                                        }
+                                        setRenamingItem(null);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{ height: 20, fontSize: 13 }}
+                                />
+                            ) : (
+                                <span className="file-name">{file.name}</span>
+                            )}
+
+                            <div className="more-actions" onClick={(e) => {
+                                e.stopPropagation();
+                                setMenuOpen(menuOpen === file.path ? null : file.path);
+                            }}>
+                                <Icon name={MoreHorizontal} size={14} />
+                            </div>
+                        </div>
+
+                        {menuOpen === file.path && (
+                            <div className="file-ops-dropdown glass" onMouseLeave={() => setMenuOpen(null)}>
+                                <div className="file-ops-item" onClick={(e) => {
+                                    e.stopPropagation();
+                                    setRenameName(file.name);
+                                    setRenamingItem({ path: file.path, oldName: file.name });
+                                    setMenuOpen(null);
+                                }}>
+                                    <Icon name={Edit} size={14} />
+                                    <span>Rename</span>
+                                </div>
+                                <div className="file-ops-item" onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(file.path);
+                                    setMenuOpen(null);
+                                }}>
+                                    <Icon name={Copy} size={14} />
+                                    <span>Copy File Path</span>
+                                </div>
+                                <div className="file-ops-item" onClick={(e) => {
+                                    e.stopPropagation();
+                                    const relPath = file.path.startsWith(workspace)
+                                        ? file.path.substring(workspace.length).replace(/^[\\\/]/, '')
+                                        : file.path;
+                                    navigator.clipboard.writeText(relPath);
+                                    setMenuOpen(null);
+                                }}>
+                                    <Icon name={Copy} size={14} />
+                                    <span>Copy Relative Path</span>
+                                </div>
+                                {file.isDirectory && (
+                                    <>
+                                        <div className="file-ops-item" onClick={(e) => {
+                                            e.stopPropagation();
+                                            setCreatingItem({ parentPath: file.path, type: 'file' });
+                                            setMenuOpen(null);
+                                            if (!expandedFolders.has(file.path)) toggleFolder(file);
+                                        }}>
+                                            <Icon name={FilePlus} size={14} />
+                                            <span>New File</span>
+                                        </div>
+                                        <div className="file-ops-item" onClick={(e) => {
+                                            e.stopPropagation();
+                                            setCreatingItem({ parentPath: file.path, type: 'folder' });
+                                            setMenuOpen(null);
+                                            if (!expandedFolders.has(file.path)) toggleFolder(file);
+                                        }}>
+                                            <Icon name={FolderPlus} size={14} />
+                                            <span>New Folder</span>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        )}
+
+                        {file.isDirectory && isExpanded && (
+                            <div className="file-tree-children">
+                                {creatingItem && creatingItem.parentPath === file.path && (
+                                    <div className="file-tree-input-wrapper" style={{ paddingLeft: (depth + 1) * 12 + 2 }}>
+                                        <div className="chevron-container">
+                                            <div className="file-tree-placeholder" />
+                                        </div>
+                                        <Icon
+                                            name={creatingItem.type === 'file' ? getFileIcon('new').name : 'folder'}
+                                            size={16}
+                                            style={{ opacity: 0.6 }}
+                                            className="file-icon"
+                                        />
+                                        <input
+                                            ref={inputRef}
+                                            className="file-tree-input"
+                                            value={newItemName}
+                                            onChange={(e) => setNewItemName(e.target.value)}
+                                            onKeyDown={handleCreateSubmit}
+                                            onBlur={() => {
+                                                if (newItemName.trim()) onCreateItem(creatingItem.parentPath, creatingItem.type, newItemName.trim());
+                                                setCreatingItem(null);
+                                                setNewItemName('');
+                                            }}
+                                            autoFocus
+                                        />
+                                    </div>
+                                )}
+                                {file.children && (
+                                    <FileTree
+                                        files={file.children}
+                                        expandedFolders={expandedFolders}
+                                        toggleFolder={toggleFolder}
+                                        openFile={openFile}
+                                        activeFile={activeFile}
+                                        workspace={workspace}
+                                        depth={depth + 1}
+                                        creatingItem={creatingItem}
+                                        setCreatingItem={setCreatingItem}
+                                        onCreateItem={onCreateItem}
+                                        renamingItem={renamingItem}
+                                        setRenamingItem={setRenamingItem}
+                                        onRenameItem={onRenameItem}
+                                    />
+                                )}
+                            </div>
+                        )}
                     </div>
-                    {file.isDirectory && expandedFolders.has(file.path) && file.children && (
-                        <FileTree
-                            files={file.children}
-                            expandedFolders={expandedFolders}
-                            toggleFolder={toggleFolder}
-                            openFile={openFile}
-                            activeFile={activeFile}
-                            depth={depth + 1}
-                        />
-                    )}
-                </div>
-            ))}
+                );
+            })}
         </>
     );
 };
@@ -99,8 +384,9 @@ const Icon = ({ name, size = 16, className = '', style = {}, ...props }) => {
                 attrs: {
                     width: size,
                     height: size,
-                    strokeWidth: 2,
-                    class: className
+                    'stroke-width': 2,
+                    class: className,
+                    style: 'display: block; margin: 0; padding: 0;'
                 }
             });
         }
@@ -114,6 +400,9 @@ const Icon = ({ name, size = 16, className = '', style = {}, ...props }) => {
                 display: 'inline-flex',
                 alignItems: 'center',
                 justifyContent: 'center',
+                width: size + 'px',
+                height: size + 'px',
+                flexShrink: 0,
                 ...style
             }}
             {...props}
@@ -181,25 +470,96 @@ const Markdown = ({ content, timestamp }) => {
             className="markdown-content"
             dangerouslySetInnerHTML={{ __html: html }}
             onClick={handleCopy}
-            onError={(e) => {
-                console.error("Markdown render error", e);
-                e.target.innerText = content; // Fallback to raw text
-            }}
         />
     );
 };
 
 class AIService {
-    constructor(apiKey, model) {
-        this.apiKey = apiKey;
-        this.model = model || 'deepseek/deepseek-chat';
-        this.baseUrl = "https://openrouter.ai/api/v1";
+    constructor(settings) {
+        this.settings = settings;
+        this.model = settings.model || 'deepseek/deepseek-chat';
     }
 
-    async chat(messages, signal) {
-        if (!this.apiKey) throw new Error("API Key missing. Go to Settings.");
+    getBaseUrl() {
+        if (this.model.startsWith('together/')) {
+            return "https://api.together.xyz/v1";
+        }
+        return "https://openrouter.ai/api/v1";
+    }
 
-        // Inject a system instruction to ensure standard markdown code blocks and OS compatibility
+    getApiKey() {
+        if (this.model.startsWith('together/')) {
+            return this.settings.togetherKey;
+        }
+        return this.settings.apiKey;
+    }
+
+    async chat(messages, onStream, signal, overrideModel) {
+        const activeModel = overrideModel || this.model;
+
+        if (activeModel.startsWith('together/')) {
+            const requestId = Math.random().toString(36).substring(7);
+
+            return new Promise(async (resolve, reject) => {
+                let fullText = "";
+                let fullReasoning = "";
+
+                const cleanupChunk = window.api.onTogetherChunk(requestId, (chunk) => {
+                    const lines = chunk.split("\n");
+                    for (const line of lines) {
+                        if (line.startsWith("data: ")) {
+                            const data = line.slice(6);
+                            if (data.trim() === "[DONE]") continue;
+                            try {
+                                const json = JSON.parse(data);
+                                const delta = json.choices[0]?.delta;
+                                const content = delta?.content || "";
+                                const reasoning = delta?.reasoning_content || "";
+                                if (content || reasoning) {
+                                    fullText += content;
+                                    fullReasoning += reasoning;
+                                    if (onStream) onStream({ content, reasoning, fullText, fullReasoning });
+                                }
+                            } catch (e) { }
+                        }
+                    }
+                });
+
+                const cleanupDone = window.api.onTogetherDone(requestId, () => {
+                    cleanupChunk();
+                    cleanupDone();
+                    cleanupError();
+                    resolve(fullText);
+                });
+
+                const cleanupError = window.api.onTogetherError(requestId, (err) => {
+                    cleanupChunk();
+                    cleanupDone();
+                    cleanupError();
+                    reject(new Error(err));
+                });
+
+                try {
+                    const res = await window.api.togetherProxyChat({
+                        messages,
+                        model: activeModel,
+                        stream: !!onStream,
+                        requestId
+                    });
+                    if (!onStream) resolve(res.choices[0].message.content);
+                } catch (err) {
+                    cleanupChunk();
+                    cleanupDone();
+                    cleanupError();
+                    reject(err);
+                }
+            });
+        }
+
+        const apiKey = this.getApiKey();
+        const baseUrl = this.getBaseUrl();
+        const model = activeModel;
+
         const systemMsg = {
             role: "system",
             content: "You are a professional coding assistant. The user is on Windows. CRITICAL: Always wrap any code snippets in standard Markdown triple backticks with a language identifier. For file operations, prioritize the 'file_edit' task type. For terminal commands, ensure compatibility with Windows CMD/PowerShell (avoid bash-specific syntax like '<<' or 'export')."
@@ -209,29 +569,73 @@ class AIService {
         const finalMessages = hasSystem ? messages : [systemMsg, ...messages];
 
         try {
-            const response = await fetch(`${this.baseUrl}/chat/completions`, {
+            const response = await fetch(`${baseUrl}/chat/completions`, {
                 method: "POST",
                 signal,
                 headers: {
-                    "Authorization": `Bearer ${this.apiKey}`,
+                    "Authorization": `Bearer ${apiKey}`,
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://github.com/google-deepmind/antigravity",
                     "X-Title": "Anita IDE"
                 },
                 body: JSON.stringify({
-                    model: this.model,
+                    model: model,
                     messages: finalMessages,
+                    stream: !!onStream
                 })
             });
 
-            const data = await response.json();
-            if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-            if (!data.choices || data.choices.length === 0) throw new Error("No response from AI.");
-
-            if (data.usage) {
-                window.api.updateTokenUsage(data.usage.total_tokens);
+            if (!response.ok) {
+                const errorData = await response.json().catch(() => ({}));
+                throw new Error(errorData.error?.message || `HTTP error! status: ${response.status}`);
             }
-            return data.choices[0].message.content;
+
+            if (onStream) {
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let fullText = "";
+                let fullReasoning = "";
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split("\n");
+
+                    for (const line of lines) {
+                        if (line.startsWith("data: ")) {
+                            const data = line.slice(6);
+                            if (data.trim() === "[DONE]") continue;
+                            try {
+                                const json = JSON.parse(data);
+                                const delta = json.choices[0]?.delta;
+                                const content = delta?.content || "";
+                                const reasoning = delta?.reasoning_content || "";
+
+                                if (content || reasoning) {
+                                    fullText += content;
+                                    fullReasoning += reasoning;
+                                    onStream({ content, reasoning, fullText, fullReasoning });
+                                }
+                            } catch (e) {
+                                // Some chunks might be incomplete JSON
+                                console.warn("Error parsing stream chunk", e);
+                            }
+                        }
+                    }
+                }
+                return fullText;
+            } else {
+                const data = await response.json();
+                if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+                if (!data.choices || data.choices.length === 0) throw new Error("No response from AI.");
+
+                if (data.usage) {
+                    window.api.updateTokenUsage(data.usage.total_tokens);
+                }
+                return data.choices[0].message.content;
+            }
         } catch (err) {
             console.error(err);
             throw err;
@@ -292,13 +696,81 @@ const CustomSelect = ({ value, onChange, options }) => {
     );
 };
 
+const ConfirmDialog = ({ isOpen, title, message, onConfirm, onCancel, confirmText = 'Confirm', cancelText = 'Cancel', type = 'info' }) => {
+    if (!isOpen) return null;
+
+    return (
+        <div className="modal-overlay confirm-overlay">
+            <div className="confirm-dialog glass">
+                <div className="confirm-dialog-header">
+                    <Icon name={type === 'warning' ? AlertCircle : CheckCircle} size={20} className={`confirm-icon ${type}`} />
+                    <span>{title || 'Confirmation'}</span>
+                </div>
+                <div className="confirm-dialog-content">
+                    {message}
+                </div>
+                <div className="confirm-dialog-actions">
+                    <button className="btn btn-outline" onClick={onCancel}>{cancelText}</button>
+                    <button className={`btn btn-primary ${type === 'warning' ? 'btn-danger' : ''}`} onClick={onConfirm}>{confirmText}</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ChatStatus = ({ status }) => {
+    if (!status) return null;
+
+    const getStatusConfig = () => {
+        switch (status) {
+            case 'thinking':
+                return { label: 'Thinking...', icon: 'brain', color: '#bc8cff' };
+            case 'generating':
+                return { label: 'Generating...', icon: 'sparkles', color: '#58a6ff' };
+            case 'loading':
+                return { label: 'Loading...', icon: 'loader-2', color: '#8b949e' };
+            case 'processing':
+                return { label: 'Processing Plan...', icon: 'list', color: '#3fb950' };
+            default:
+                return { label: 'Working...', icon: 'loader-2', color: '#8b949e' };
+        }
+    };
+
+    const config = getStatusConfig();
+
+    return (
+        <div className="chat-status-indicator">
+            <div className="status-dot-wrapper">
+                <div className="status-dot" style={{ backgroundColor: config.color }}></div>
+                <div className="status-dot-ping" style={{ backgroundColor: config.color }}></div>
+            </div>
+            <Icon name={config.icon} size={14} style={{ color: config.color }} className={status === 'loading' || status === 'thinking' ? 'spin' : ''} />
+            <span className="status-label" style={{ color: config.color }}>{config.label}</span>
+        </div>
+    );
+};
+
 const App = () => {
     const [workspace, setWorkspace] = useState(null);
     const [files, setFiles] = useState([]);
     const [activeFile, setActiveFile] = useState(null);
     const [tabs, setTabs] = useState([]);
-    const [settings, setSettings] = useState({ apiKey: '', theme: 'dark', model: 'deepseek/deepseek-chat' });
+    const [settings, setSettings] = useState({
+        apiKey: '',
+        theme: 'dark',
+        model: 'deepseek/deepseek-chat',
+        userBubbleColor: '#58a6ff',
+        aiBubbleColor: '#161b22',
+        userTextColor: '#000000',
+        aiTextColor: '#e6edf3',
+        chatBgImage: '',
+        userBubbleBgImage: '',
+        aiBubbleBgImage: '',
+        togetherKey: ''
+    });
     const [showSettings, setShowSettings] = useState(false);
+    const [activeSettingsMenu, setActiveSettingsMenu] = useState('AI Model');
+    const [expandedAccordions, setExpandedAccordions] = useState(new Set(['chat']));
     const [activeTab, setActiveTab] = useState('chat');
     const [composerInput, setComposerInput] = useState('');
     const [logs, setLogs] = useState([]);
@@ -317,6 +789,12 @@ const App = () => {
     }]);
     const [activeTerminalId, setActiveTerminalId] = useState('t1');
     const [composerMode, setComposerMode] = useState('chat');
+    const [creatingItem, setCreatingItem] = useState(null); // { parentPath, type }
+    const [renamingItem, setRenamingItem] = useState(null); // { path, oldName }
+    const [aiStatus, setAiStatus] = useState(null); // 'thinking', 'generating', 'loading', 'processing'
+    const [confirmDialog, setConfirmDialog] = useState(null); // { title, message, onConfirm, onCancel, confirmText, cancelText, type }
+
+
 
     // Layout State
     const [isLeftSidebarVisible, setIsLeftSidebarVisible] = useState(true);
@@ -337,6 +815,7 @@ const App = () => {
             abortControllerRef.current = null;
         }
         setIsPlanning(false);
+        setAiStatus(null);
         setChats(prev => prev.map(c => ({
             ...c,
             messages: c.messages.filter(m => !m.isLoading)
@@ -351,9 +830,10 @@ const App = () => {
     const [historyLoaded, setHistoryLoaded] = useState(false);
 
     const monacoRef = useRef(null);
+    const editorContainerRef = useRef(null);
     const terminalInputRef = useRef(null);
     const composerRef = useRef(null);
-    const ai = useMemo(() => new AIService(settings.apiKey, settings.model), [settings.apiKey, settings.model]);
+    const ai = useMemo(() => new AIService(settings), [settings.apiKey, settings.model]);
 
     useEffect(() => {
         const init = async () => {
@@ -367,12 +847,25 @@ const App = () => {
             if (tcwd) {
                 setTerminals(prev => prev.map(t => t.id === 't1' ? { ...t, cwd: tcwd, cwdInput: tcwd } : t));
             }
+            const defaultSettings = {
+                apiKey: '',
+                theme: 'dark',
+                model: 'deepseek/deepseek-chat',
+                userBubbleColor: '#58a6ff',
+                aiBubbleColor: '#161b22',
+                userTextColor: '#000000',
+                aiTextColor: '#e6edf3',
+                chatBgImage: '',
+                userBubbleBgImage: '',
+                aiBubbleBgImage: '',
+                togetherKey: ''
+            };
             const s = await window.api.getSettings();
             if (s) {
                 if (!s.model || s.model.includes('deepseek-r1:free')) {
                     s.model = 'deepseek/deepseek-chat';
                 }
-                setSettings(s);
+                setSettings({ ...defaultSettings, ...s });
             }
             const usage = await window.api.getTokenUsage();
             if (usage) setTokenUsage(usage);
@@ -398,21 +891,6 @@ const App = () => {
 
             if (!s || !s.apiKey) setShowSettings(true);
 
-            // Init Monaco
-            if (window.require) {
-                window.require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
-                window.require(['vs/editor/editor.main'], function () {
-                    const container = document.getElementById('editor-container');
-                    if (container) {
-                        monacoRef.current = window.monaco.editor.create(container, {
-                            theme: 'vs-dark',
-                            automaticLayout: true,
-                            fontSize: 14,
-                            minimap: { enabled: false }
-                        });
-                    }
-                });
-            }
 
             if (window.marked) {
                 // Use the modern .use API for consistent rendering
@@ -479,6 +957,190 @@ const App = () => {
         init();
     }, []);
 
+    // Dedicated Monaco Initialization and Lifecycle Effect
+    useEffect(() => {
+        if (!isCentralPanelVisible) {
+            if (monacoRef.current) {
+                // Properly dispose all models and the editor instance
+                const models = window.monaco?.editor?.getModels() || [];
+                models.forEach(m => m.dispose());
+                monacoRef.current.dispose();
+                monacoRef.current = null;
+            }
+            return;
+        }
+
+        if (window.require) {
+            // Configure Monaco Loader to use the CDN
+            window.require.config({
+                paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' }
+            });
+
+            window.require(['vs/editor/editor.main'], function () {
+                const container = editorContainerRef.current;
+                if (container) {
+                    // Ensure no double initialization
+                    if (monacoRef.current) {
+                        return; // Already initialized
+                    }
+
+                    monacoRef.current = window.monaco.editor.create(container, {
+                        theme: 'vs-dark',
+                        automaticLayout: true,
+                        fontSize: 14,
+                        fontFamily: "'Fira Code', 'Cascadia Code', 'Source Code Pro', monospace",
+                        fontLigatures: true,
+                        minimap: { enabled: true, side: 'right', renderCharacters: false, maxColumn: 120 },
+                        folding: true,
+                        foldingHighlight: true,
+                        foldingStrategy: 'indentation',
+                        showFoldingControls: 'mouseover',
+                        renderIndentGuides: true,
+                        highlightActiveIndentGuide: true,
+                        cursorSmoothCaretAnimation: 'on',
+                        smoothScrolling: true,
+                        mouseWheelZoom: true,
+                        bracketPairColorization: { enabled: true },
+                        padding: { top: 12, bottom: 8 },
+                        scrollbar: {
+                            verticalScrollbarSize: 10,
+                            horizontalScrollbarSize: 10,
+                            useShadows: false,
+                            vertical: 'visible',
+                            horizontal: 'visible'
+                        },
+                        fixedOverflowWidgets: true,
+                        roundedSelection: true,
+                        overviewRulerBorder: false,
+                        quickSuggestions: { other: true, comments: true, strings: true },
+                        parameterHints: { enabled: true },
+                        suggestOnTriggerCharacters: true,
+                        tabCompletion: "on",
+                        wordBasedSuggestions: "allDocuments",
+                    });
+
+                    // Register AI Inline Suggestion Provider
+                    window.monaco.languages.registerCompletionItemProvider('*', {
+                        triggerCharacters: ['.', ' ', '(', '{'],
+                        provideCompletionItems: async (model, position) => {
+                            // Only trigger manually or on specific logic to avoid overwhelming
+                            // We'll use a specific indicator or just check if it's a "low confidence" area
+                            const line = model.getLineContent(position.lineNumber);
+                            if (!line.trim().endsWith('/') && !line.includes('// AI:')) return { suggestions: [] };
+
+                            const text = model.getValue();
+                            const offset = model.getOffsetAt(position);
+                            const context = text.substring(Math.max(0, offset - 1000), offset);
+
+                            try {
+                                const response = await ai.chat([{
+                                    role: 'system',
+                                    content: `You are a code completion engine. Predict the next few tokens of code. Return ONLY the code, no markdown, no explanation.`
+                                }, {
+                                    role: 'user',
+                                    content: `Context:\n${context}`
+                                }]);
+
+                                if (response) {
+                                    return {
+                                        suggestions: [{
+                                            label: 'AI Suggestion',
+                                            kind: window.monaco.languages.CompletionItemKind.Snippet,
+                                            insertText: response.trim(),
+                                            detail: 'Generated by AI',
+                                            range: {
+                                                startLineNumber: position.lineNumber,
+                                                endLineNumber: position.lineNumber,
+                                                startColumn: position.column,
+                                                endColumn: position.column
+                                            }
+                                        }]
+                                    };
+                                }
+                            } catch (e) { console.error(e); }
+                            return { suggestions: [] };
+                        }
+                    });
+
+                    // Immediate layout refresh
+                    monacoRef.current.layout();
+
+                    // ResizeObserver for reliable layout updates
+                    const ro = new ResizeObserver(() => {
+                        if (monacoRef.current) {
+                            monacoRef.current.layout();
+                        }
+                    });
+                    ro.observe(container);
+
+                    // Add AI Context Menu Action
+                    monacoRef.current.addAction({
+                        id: 'ai-explain',
+                        label: 'Explain Code with AI',
+                        keybindings: [window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyE],
+                        contextMenuGroupId: 'navigation',
+                        contextMenuOrder: 1,
+                        run: (ed) => {
+                            const selection = ed.getSelection();
+                            const text = ed.getModel().getValueInRange(selection) || ed.getModel().getValue();
+                            if (text) {
+                                setComposerInput(`Explain this code segment from ${activeFile.split(/[\\/]/).pop()}:\n\n\`\`\`${activeFile.split('.').pop()}\n${text}\n\`\`\``);
+                                setIsRightPanelVisible(true);
+                                setActiveTab('chat');
+                                if (composerRef.current) {
+                                    composerRef.current.focus();
+                                }
+                            }
+                        }
+                    });
+
+                    monacoRef.current.addAction({
+                        id: 'ai-fix',
+                        label: 'Suggest Fix with AI',
+                        keybindings: [window.monaco.KeyMod.CtrlCmd | window.monaco.KeyMod.Shift | window.monaco.KeyCode.KeyF],
+                        contextMenuGroupId: 'navigation',
+                        contextMenuOrder: 2,
+                        run: (ed) => {
+                            const selection = ed.getSelection();
+                            const text = ed.getModel().getValueInRange(selection);
+                            if (text) {
+                                setComposerInput(`Identify issues and suggest improvements for this code segment:\n\n\`\`\`${activeFile.split('.').pop()}\n${text}\n\`\`\``);
+                                setIsRightPanelVisible(true);
+                                setActiveTab('chat');
+                                if (composerRef.current) {
+                                    composerRef.current.focus();
+                                }
+                            } else {
+                                addLog(null, "Please select code to fix", "info");
+                            }
+                        }
+                    });
+
+                    // Restore active file if panel was just toggled on
+                    if (activeFile) {
+                        const tab = tabs.find(t => t.path === activeFile);
+                        if (tab) openFile(tab);
+                    }
+                }
+            });
+        }
+
+        return () => {
+            if (monacoRef.current) {
+                monacoRef.current.dispose();
+                monacoRef.current = null;
+            }
+        };
+    }, [isCentralPanelVisible]);
+
+    useEffect(() => {
+        if (monacoRef.current && activeFile) {
+            setTimeout(() => {
+                monacoRef.current.layout();
+            }, 100);
+        }
+    }, [activeFile]);
+
     useEffect(() => {
         const el = document.getElementById('logs-end');
         if (el) el.scrollIntoView({ behavior: 'smooth' });
@@ -489,10 +1151,12 @@ const App = () => {
         if (el) el.scrollIntoView({ behavior: 'smooth' });
 
         if (historyLoaded) {
-            window.api.saveChats(chats.map(c => ({
+            // Only save chats that have messages
+            const chatsToSave = chats.filter(c => c.messages.length > 0).map(c => ({
                 ...c,
                 messages: c.messages.filter(m => !m.isLoading)
-            })));
+            }));
+            window.api.saveChats(chatsToSave);
             // Save open tabs too
             window.localStorage.setItem('openChatIds', JSON.stringify(openChatIds));
         }
@@ -571,19 +1235,93 @@ const App = () => {
         };
     }, [resizing, isTerminalVisible]);
 
-    const loadFiles = async (path) => {
+    const loadFiles = async (path, customExpandedPaths = null) => {
         try {
-            const dirFiles = await window.api.readDir(path);
-            // Sort: directories first, then alphabetically
-            const sorted = dirFiles.sort((a, b) => {
-                if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
-                return a.isDirectory ? -1 : 1;
+            const exp = customExpandedPaths || expandedFolders;
+
+            const fetchDirRecursive = async (dirPath) => {
+                const results = await window.api.readDir(dirPath);
+                const sorted = results.sort((a, b) => {
+                    if (a.isDirectory === b.isDirectory) return a.name.localeCompare(b.name);
+                    return a.isDirectory ? -1 : 1;
+                });
+
+                for (const file of sorted) {
+                    if (file.isDirectory && exp.has(file.path)) {
+                        file.children = await fetchDirRecursive(file.path);
+                    }
+                }
+                return sorted;
+            };
+
+            const rootChildren = await fetchDirRecursive(path);
+            const rootName = path.split(/[\\/]/).filter(Boolean).pop() || 'Project';
+
+            setFiles([{
+                name: rootName,
+                path: path,
+                isDirectory: true,
+                children: rootChildren
+            }]);
+
+            setExpandedFolders(prev => {
+                const next = new Set(prev);
+                next.add(path);
+                return next;
             });
-            setFiles(sorted);
         } catch (err) {
             console.error(err);
         }
     };
+
+    const onCreateItem = async (parentPath, type, name) => {
+        const fullPath = `${parentPath}\\${name}`;
+        try {
+            if (type === 'file') {
+                await window.api.writeFile(fullPath, '');
+                openFile({ path: fullPath, name, isDirectory: false });
+            } else {
+                await window.api.createFolder(fullPath);
+            }
+            addLog(null, `Created ${type}: ${name}`);
+            loadFiles(workspace);
+        } catch (err) {
+            addLog(null, `Error creating ${type}: ${err.message}`, 'error');
+        }
+    };
+
+
+    const onRenameItem = async (oldPath, newName) => {
+        const parentDir = oldPath.substring(0, oldPath.lastIndexOf('\\'));
+        const newPath = `${parentDir}\\${newName}`;
+        try {
+            await window.api.renamePath(oldPath, newPath);
+            addLog(null, `Renamed to ${newName}`);
+
+            const nextExp = new Set();
+            expandedFolders.forEach(p => {
+                if (p === oldPath) nextExp.add(newPath);
+                else if (p.startsWith(oldPath + '\\')) nextExp.add(p.replace(oldPath, newPath));
+                else nextExp.add(p);
+            });
+            setExpandedFolders(nextExp);
+
+            if (activeFile === oldPath || activeFile?.startsWith(oldPath + '\\')) {
+                setActiveFile(activeFile.replace(oldPath, newPath));
+            }
+            setTabs(prev => prev.map(t => {
+                if (t.path === oldPath || t.path.startsWith(oldPath + '\\')) {
+                    return { ...t, path: t.path.replace(oldPath, newPath), name: t.path === oldPath ? newName : t.name };
+                }
+                return t;
+            }));
+
+            loadFiles(workspace, nextExp);
+        } catch (err) {
+            addLog(null, `Error renaming: ${err.message}`, 'error');
+        }
+    };
+
 
     const toggleFolder = async (folder) => {
         const path = folder.path;
@@ -619,8 +1357,7 @@ const App = () => {
         const path = await window.api.selectWorkspace();
         if (path) {
             setWorkspace(path);
-            setTerminalCwd(path);
-            setTerminalCwdInput(path);
+            setTerminals(prev => prev.map(t => ({ ...t, cwd: path, cwdInput: path })));
             loadFiles(path);
         }
     };
@@ -650,23 +1387,44 @@ const App = () => {
             setActiveFile(file.path);
 
             if (monacoRef.current) {
-                const extension = file.name.split('.').pop();
-                let language = 'javascript';
-                if (['html', 'css', 'json', 'python'].includes(extension)) language = extension === 'py' ? 'python' : extension;
+                const language = getLanguageForFile(file.name);
 
-                // Use Uri.file for reliable path handling
-                const uri = window.monaco.Uri.file(file.path);
+                // Normalize path for Monaco URI
+                const normalizedPath = file.path.replace(/\\/g, '/');
+                const uri = window.monaco.Uri.file(normalizedPath);
                 let model = window.monaco.editor.getModel(uri);
 
                 if (!model) {
-                    model = window.monaco.editor.createModel(tab.content, language, uri);
+                    // Fallback to empty string if content is missing
+                    const initialContent = tab.content || '';
+                    model = window.monaco.editor.createModel(initialContent, language, uri);
                     model.onDidChangeContent(() => {
                         setTabs(currentTabs => currentTabs.map(t =>
                             t.path === file.path ? { ...t, isDirty: true } : t
                         ));
                     });
+                } else {
+                    // Update language if it changed or wasn't set correctly
+                    window.monaco.editor.setModelLanguage(model, language);
+
+                    if (!model.getValue() && tab.content) {
+                        model.setValue(tab.content);
+                    }
                 }
+
                 monacoRef.current.setModel(model);
+
+                // Force a series of layout refreshes to handle deep CSS transitions and focus
+                const refreshLayout = () => {
+                    if (monacoRef.current) {
+                        monacoRef.current.layout();
+                        monacoRef.current.focus();
+                    }
+                };
+
+                refreshLayout();
+                setTimeout(refreshLayout, 50);
+                setTimeout(refreshLayout, 250);
 
                 // Add save shortcut
                 monacoRef.current.addCommand(window.monaco.KeyMod.CtrlCmd | window.monaco.KeyCode.KeyS, () => {
@@ -700,28 +1458,46 @@ const App = () => {
         const tab = tabs.find(t => t.path === path);
         if (!tab) return;
 
+        const finalizeClose = () => {
+            const newTabs = tabs.filter(t => t.path !== path);
+            setTabs(newTabs);
+
+            if (activeFile === path) {
+                if (newTabs.length > 0) {
+                    openFile(newTabs[newTabs.length - 1]);
+                } else {
+                    setActiveFile(null);
+                    if (monacoRef.current) monacoRef.current.setModel(null);
+                }
+            }
+
+            // Cleanup model
+            const uri = window.monaco.Uri.file(path);
+            const model = window.monaco.editor.getModel(uri);
+            if (model) model.dispose();
+        };
+
         if (tab.isDirty) {
-            if (confirm(`${tab.name} has unsaved changes. Save before closing?`)) {
-                await saveFile(path);
-            }
+            setConfirmDialog({
+                title: 'Unsaved Changes',
+                message: `${tab.name} has unsaved changes. Save before closing?`,
+                confirmText: 'Save and Close',
+                cancelText: 'Discard and Close',
+                type: 'warning',
+                onConfirm: async () => {
+                    await saveFile(path);
+                    finalizeClose();
+                    setConfirmDialog(null);
+                },
+                onCancel: () => {
+                    finalizeClose();
+                    setConfirmDialog(null);
+                }
+            });
+            return;
         }
 
-        const newTabs = tabs.filter(t => t.path !== path);
-        setTabs(newTabs);
-
-        if (activeFile === path) {
-            if (newTabs.length > 0) {
-                openFile(newTabs[newTabs.length - 1]);
-            } else {
-                setActiveFile(null);
-                if (monacoRef.current) monacoRef.current.setModel(null);
-            }
-        }
-
-        // Cleanup model
-        const uri = window.monaco.Uri.file(path);
-        const model = window.monaco.editor.getModel(uri);
-        if (model) model.dispose();
+        finalizeClose();
     };
 
     const handleSubmitProposal = async () => {
@@ -736,10 +1512,13 @@ const App = () => {
         const goal = composerInput;
         setComposerInput('');
         setIsPlanning(true);
+        setAiStatus('thinking');
 
         const currentController = new AbortController();
         abortControllerRef.current = currentController;
         const signal = currentController.signal;
+
+        const targetChatId = activeChatId;
 
         const userMsg = {
             id: 'u-' + Date.now(),
@@ -748,38 +1527,57 @@ const App = () => {
             timestamp: new Date().toLocaleTimeString()
         };
 
-        const currentActiveChat = chats.find(c => c.id === activeChatId);
+        const currentActiveChat = chats.find(c => c.id === targetChatId);
         if (!currentActiveChat) return;
 
-        const updatedMessages = [...currentActiveChat.messages, userMsg];
+        const loadingMsg = {
+            id: 'l-' + Date.now(),
+            role: 'assistant',
+            isLoading: true,
+            timestamp: new Date().toLocaleTimeString()
+        };
+
+        const updatedMessages = [...currentActiveChat.messages, userMsg, loadingMsg];
 
         // Update local state for immediate feedback
-        setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: updatedMessages, lastUpdatedAt: Date.now() } : c));
+        setChats(prev => prev.map(c => c.id === targetChatId ? { ...c, messages: updatedMessages, lastUpdatedAt: Date.now() } : c));
 
         try {
             // Smart Logic: Detect intent based on user prompt and selected mode
             addLog(null, `Processing ${composerMode} request...`);
 
-            const systemInstruction = `You are a professional AI developer on Windows. 
-Your goal is to assist the user based on their current request: "${goal}"
+            const systemInstruction = composerMode === 'agent'
+                ? `You are a professional AI developer on Windows. 
+The user has asked for an implementation plan (AGENT MODE).
+YOUR ROLE:
+1. If the requirements are absolutely clear, provide ONLY the JSON object for the plan.
+2. If any details are missing or ambiguous, do NOT provide the JSON yet. Instead, ask for clarification in Markdown.
+3. Once the user says 'create plan' or provides the missing info, then output the JSON.
 
-RESPONSE OPTIONS:
-1. If the user wants to implement code, modify files, or run commands, respond ONLY with a JSON PLAN:
+CRITICAL: When outputting the JSON plan, provide ONLY the JSON block. No descriptions outside it.
+
+JSON FORMAT:
 {
-  "plan": "detailed explanation of what you will do",
+  "plan": "Detailed explanation of strategy",
   "tasks": [
     { "id": 1, "description": "...", "type": "file_edit", "path": "...", "content": "..." },
     { "id": 2, "description": "...", "type": "terminal", "command": "..." }
   ]
-}
+}`
+                : `You are a professional AI developer on Windows. 
 
-2. If the user is just chatting, asking a question, or providing feedback, respond with a normal conversational MARKDOWN message.
+WORKFLOW GUIDELINES:
+1. Your secondary goal is to understand the user's requirements through conversation.
+2. Ask clarifying questions to ensure you have all technical details.
+3. DO NOT generate an implementation plan (JSON) until the user explicitly asks for one (e.g., 'create a plan', 'start implementation', 'go ahead').
+4. Once requirements are understood, tell the user: "I understand the requirements. Please give the command to create the implementation plan when you're ready."
+5. ONLY when commanded to create the plan, use the JSON format below.
 
-AUTO-DETECTION:
-- If the user explicitly asks for implementation ("build", "create", "fix", "add"), use the JSON PLAN.
-- If the user asks a question ("how", "why", "what") or greets you, use MARKDOWN.
-- Current User Preference: ${composerMode === 'agent' ? 'Favor execution/implementation' : 'Favor discussion/explanation'}.
-`;
+JSON FORMAT (Use ONLY when asked to create a plan):
+{
+  "plan": "explanation",
+  "tasks": [ ... ]
+}`;
 
             const messagesForAI = updatedMessages
                 .filter(m => m.content)
@@ -788,34 +1586,73 @@ AUTO-DETECTION:
             // Add the system instruction for this specific call
             const finalMessages = [{ role: 'system', content: systemInstruction }, ...messagesForAI];
 
-            const response = await ai.chat(finalMessages, signal);
-            const trimmedResponse = response.replace(/```json|```/g, "").trim();
+            let streamContent = "";
+            let streamReasoning = "";
+
+            const agentModel = "together/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo";
+            const response = await ai.chat(finalMessages, (chunk) => {
+                streamContent = chunk.fullText;
+                streamReasoning = chunk.fullReasoning;
+
+                setChats(prev => prev.map(c => {
+                    if (c.id === targetChatId) {
+                        const isJSON = streamContent.trim().startsWith('{');
+                        return {
+                            ...c,
+                            messages: c.messages.map(m =>
+                                m.id === loadingMsg.id ? {
+                                    ...m,
+                                    content: isJSON ? "_Anita is drafting a technical implementation plan..._" : streamContent,
+                                    reasoning: streamReasoning,
+                                    isLoading: !streamContent && !streamReasoning
+                                } : m
+                            )
+                        };
+                    }
+                    return c;
+                }));
+            }, signal, composerMode === 'agent' ? agentModel : null);
+
+            setAiStatus('generating');
 
             let proposal = null;
             let isPlan = false;
 
-            // Attempt to parse as plan if it looks like JSON
-            if (trimmedResponse.startsWith('{') && trimmedResponse.includes('"tasks"')) {
+            // Robust JSON extraction: Find the first { and last }
+            const firstBrace = response.indexOf('{');
+            const lastBrace = response.lastIndexOf('}');
+
+            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+                const jsonCandidate = response.substring(firstBrace, lastBrace + 1);
                 try {
-                    const parsed = JSON.parse(trimmedResponse);
+                    const parsed = JSON.parse(jsonCandidate);
                     if (parsed.tasks && Array.isArray(parsed.tasks)) {
                         proposal = parsed;
                         isPlan = true;
                     }
                 } catch (e) {
-                    console.warn("AI returned JSON-like text but it failed to parse. Falling back to chat.");
+                    console.warn("Found JSON-like structure but failed to parse:", e);
                 }
             }
 
             if (isPlan) {
+                setAiStatus('processing');
                 // Handling Agent Session
                 const newSession = {
                     id: Date.now(),
-                    chatId: activeChatId,
+                    chatId: targetChatId,
                     timestamp: new Date().toISOString(),
                     goal,
-                    plan: proposal.plan,
-                    tasks: proposal.tasks.map(t => ({ ...t, status: 'pending' })),
+                    plan: proposal.plan || "No plan description provided.",
+                    tasks: proposal.tasks.map((t, idx) => ({
+                        id: t.id || (Date.now() + idx),
+                        description: t.description || t.task || t.name || t.label || `Task ${idx + 1}`,
+                        type: t.type || 'unknown',
+                        path: t.path || '',
+                        content: t.content || '',
+                        command: t.command || '',
+                        status: 'pending'
+                    })).filter(t => t.description),
                     status: 'awaiting_approval'
                 };
 
@@ -831,20 +1668,22 @@ AUTO-DETECTION:
                     timestamp: new Date().toLocaleTimeString()
                 };
 
-                setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: [...updatedMessages, summaryMsg] } : c));
+                setChats(prev => prev.map(c => c.id === targetChatId ? { ...c, messages: [...c.messages.filter(m => m.id !== loadingMsg.id && !m.isLoading), summaryMsg] } : c));
                 addLog(null, `Planner: execution plan generated.`);
             } else {
                 // Handling Regular Chat
-                const assistantMsg = {
-                    id: 'a-' + Date.now(),
-                    role: 'assistant',
-                    content: response,
-                    timestamp: new Date().toLocaleTimeString()
-                };
-
+                // We already updated the message via streaming, but let's ensure final state
                 setChats(prev => prev.map(c => {
-                    if (c.id === activeChatId) {
-                        const newMessages = [...updatedMessages.filter(m => !m.isLoading), assistantMsg];
+                    if (c.id === targetChatId) {
+                        const newMessages = c.messages.map(m =>
+                            (m.id === loadingMsg.id) ? {
+                                ...m,
+                                content: response,
+                                reasoning: streamReasoning,
+                                timestamp: new Date().toLocaleTimeString(),
+                                isLoading: false
+                            } : m
+                        );
 
                         // Handle Chat Title Generation
                         const isOriginalDefault = c.title === 'New Chat' || c.title.startsWith('New Chat(');
@@ -854,7 +1693,7 @@ AUTO-DETECTION:
                             generateChatTitle(userMessages[0].content).then(generatedTitle => {
                                 if (generatedTitle) {
                                     setChats(latestChats => latestChats.map(lc =>
-                                        lc.id === activeChatId ? { ...lc, title: generatedTitle } : lc
+                                        lc.id === targetChatId ? { ...lc, title: generatedTitle } : lc
                                     ));
                                 }
                             });
@@ -871,9 +1710,10 @@ AUTO-DETECTION:
                 console.error(err);
                 addLog(null, `Error: ${err.message}`, "error");
             }
-            setChats(prev => prev.map(c => c.id === activeChatId ? { ...c, messages: c.messages.filter(m => !m.isLoading) } : c));
+            setChats(prev => prev.map(c => c.id === targetChatId ? { ...c, messages: c.messages.filter(m => !m.isLoading) } : c));
         } finally {
             setIsPlanning(false);
+            setAiStatus(null);
             if (abortControllerRef.current === currentController) {
                 abortControllerRef.current = null;
             }
@@ -893,18 +1733,131 @@ User Message: "${userPrompt}"`;
         }
     };
 
-    const executeSession = async (sessionId) => {
+    const repairSession = async (sessionId) => {
         const session = sessions.find(s => s.id === sessionId);
+        if (!session) return;
+
+        const failedTask = session.tasks.find(t => t.status === 'error');
+        if (!failedTask) return;
+
+        setAiStatus('thinking');
+        addLog(null, `Requesting AI repair for: ${failedTask.description}...`);
+
+        const repairPrompt = `You are a professional AI developer on Windows. 
+One of the tasks in your implementation plan has failed. Analyze the error and provide a fix.
+
+ORIGINAL GOAL: "${session.goal}"
+CURRENT PLAN: ${session.plan}
+
+FAILED TASK:
+- Description: ${failedTask.description}
+- Type: ${failedTask.type}
+${failedTask.command ? `- Command: ${failedTask.command}` : ''}
+${failedTask.path ? `- Path: ${failedTask.path}` : ''}
+
+ERROR ENCOUNTERED:
+"${failedTask.error || 'Unknown Error'}"
+
+REMAINING TASKS THAT WERE PENDING:
+${session.tasks.filter(t => t.status === 'pending').map(t => `- ${t.description}`).join('\n')}
+
+CRITICAL: Respond ONLY with a JSON object. Provide a sequence of tasks to fix the error and move forward significantly to complete the original goal.
+JSON FORMAT:
+{
+  "analysis": "What went wrong and how to fix it",
+  "plan": "The updated strategy for the new plan",
+  "tasks": [
+    { "description": "Fix step...", "type": "terminal", "command": "..." },
+    { "description": "Continuing step...", "type": "file_edit", "path": "...", "content": "..." }
+  ]
+}`;
+
+        try {
+            const agentModel = "together/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo";
+            const response = await ai.chat([{ role: 'user', content: repairPrompt }], null, null, agentModel);
+            let repairProposal = null;
+            const firstBrace = response.indexOf('{');
+            const lastBrace = response.lastIndexOf('}');
+
+            if (firstBrace !== -1 && lastBrace !== -1) {
+                const jsonCandidate = response.substring(firstBrace, lastBrace + 1);
+                repairProposal = JSON.parse(jsonCandidate);
+            }
+
+            if (repairProposal && repairProposal.tasks && Array.isArray(repairProposal.tasks)) {
+                // Create a NEW session for the repair plan
+                const newSession = {
+                    id: Date.now(),
+                    chatId: session.chatId,
+                    timestamp: new Date().toISOString(),
+                    goal: `[FIX] ${session.goal}`,
+                    plan: repairProposal.plan || session.plan,
+                    analysis: repairProposal.analysis,
+                    tasks: repairProposal.tasks.map(t => ({ ...t, status: 'pending' })),
+                    status: 'awaiting_approval'
+                };
+
+                const updatedSessions = [newSession, ...sessions];
+                setSessions(updatedSessions);
+                window.api.saveSessions(updatedSessions);
+
+                const summaryMsg = {
+                    id: 'agent-repair-' + Date.now(),
+                    role: 'assistant',
+                    type: 'agent_session',
+                    sessionId: newSession.id,
+                    timestamp: new Date().toLocaleTimeString(),
+                    isRepair: true
+                };
+
+                setChats(prev => prev.map(c => c.id === session.chatId ? {
+                    ...c,
+                    messages: [...c.messages, summaryMsg],
+                    lastUpdatedAt: Date.now()
+                } : c));
+
+                addLog(null, `Repair plan generated: ${repairProposal.analysis}`);
+                return true;
+            }
+            return false;
+        } catch (e) {
+            console.error("Manual repair failed", e);
+            addLog(null, `AI repair failed: ${e.message}`, 'error');
+            return false;
+        } finally {
+            setAiStatus(null);
+        }
+    };
+
+    const executeSession = async (sessionId) => {
+        let session = sessions.find(s => s.id === sessionId);
         if (!session) return;
 
         session.status = 'running';
         setSessions([...sessions]);
         addLog(null, `Execution started for: ${session.goal}`);
 
-        for (const task of session.tasks) {
+        let currentIndex = 0;
+        // Use a while loop to handle dynamically added/modified tasks during repairs
+        while (true) {
+            // Re-fetch session from state to get potential modifications from repair
+            const currentSessions = await window.api.getSessions() || sessions;
+            const currentSession = currentSessions.find(s => s.id === sessionId);
+            if (!currentSession || currentIndex >= currentSession.tasks.length) break;
+
+            const task = currentSession.tasks[currentIndex];
+
+            if (task.status === 'finished') {
+                currentIndex++;
+                continue;
+            }
+
             task.status = 'active';
-            setSessions([...sessions]);
+            setSessions([...currentSessions]);
             addLog(null, `Agent: ${task.description}`);
+
+            let resultSuccess = false;
+            let resultError = '';
 
             try {
                 if (task.type === 'file_edit') {
@@ -913,34 +1866,76 @@ User Message: "${userPrompt}"`;
                     addLog(null, `File written: ${task.path}`);
                     loadFiles(workspace);
                     if (activeFile === fullPath && monacoRef.current) monacoRef.current.setValue(task.content);
+                    resultSuccess = true;
                 } else if (task.type === 'terminal') {
-                    if (confirm(`Approve terminal command: ${task.command}`)) {
-                        const result = await window.api.executeCommand(task.command);
-                        if (result.success) {
-                            addLog(null, `Command success: ${task.command}`);
-                            loadFiles(workspace);
-                        } else {
-                            addLog(null, `Command failed: ${result.stderr || result.error}`, 'error');
-                            task.status = 'error';
+                    const result = await new Promise((resolve) => {
+                        setConfirmDialog({
+                            title: 'Security Approval',
+                            message: `The AI wants to execute a terminal command: ${task.command}`,
+                            confirmText: 'Approve',
+                            cancelText: 'Decline',
+                            type: 'info',
+                            onConfirm: async () => {
+                                setConfirmDialog(null);
+                                const res = await window.api.executeCommand(activeTerminalId, task.command);
+                                resolve(res);
+                            },
+                            onCancel: () => {
+                                setConfirmDialog(null);
+                                resolve({ success: false, error: 'Command declined by user' });
+                            }
+                        });
+                    });
+
+                    if (result.success) {
+                        addLog(null, `Command success: ${task.command}`);
+                        loadFiles(workspace);
+                        resultSuccess = true;
+                    } else {
+                        resultSuccess = false;
+                        resultError = result.stderr || result.error || 'Command failed';
+                        if (resultError === 'Command declined by user') {
+                            addLog(null, `Command skipped: ${task.command}`);
+                            task.status = 'cancelled';
                             break;
                         }
-                    } else {
-                        addLog(null, `Command skipped: ${task.command}`);
-                        task.status = 'cancelled';
-                        break;
                     }
                 }
-                task.status = 'finished';
             } catch (err) {
-                task.status = 'error';
-                addLog(null, `Task failed: ${err.message}`, 'error');
-                break;
+                resultSuccess = false;
+                resultError = err.message;
             }
+
+            if (resultSuccess) {
+                task.status = 'finished';
+                currentIndex++;
+                setSessions([...currentSessions]);
+                window.api.saveSessions([...currentSessions]);
+            } else {
+                task.status = 'error';
+                task.error = resultError;
+                setSessions([...currentSessions]);
+                window.api.saveSessions([...currentSessions]);
+                addLog(null, `Task failed: ${resultError}`, 'error');
+                break; // Stop execution on error
+            }
+
+            // Sync state and storage after each task/repair
+            setSessions(prev => {
+                const refreshed = [...prev];
+                window.api.saveSessions(refreshed);
+                return refreshed;
+            });
         }
 
-        session.status = session.tasks.every(t => t.status === 'finished') ? 'finished' : 'error';
-        setSessions([...sessions]);
-        window.api.saveSessions(sessions);
+        const finalSessions = await window.api.getSessions() || sessions;
+        const finalSession = finalSessions.find(s => s.id === sessionId);
+        if (finalSession) {
+            finalSession.status = finalSession.tasks.every(t => t.status === 'finished') ? 'finished' : 'error';
+            setSessions([...finalSessions]);
+            window.api.saveSessions(finalSessions);
+        }
+
         loadFiles(workspace);
         const usage = await window.api.getTokenUsage();
         if (usage) setTokenUsage(usage);
@@ -1062,7 +2057,7 @@ User Message: "${userPrompt}"`;
                 </div>
 
                 <div className="header-center">
-                    <span>{workspace ? workspace.replace(/\\/g, '/').split('/').pop() : 'No Project'} - {activeChat ? activeChat.title : 'Anita'}</span>
+                    <span>anita1</span>
                 </div>
 
                 <div className="header-right">
@@ -1148,9 +2143,17 @@ User Message: "${userPrompt}"`;
                             toggleFolder={toggleFolder}
                             openFile={openFile}
                             activeFile={activeFile}
+                            workspace={workspace}
                             depth={0}
+                            creatingItem={creatingItem}
+                            setCreatingItem={setCreatingItem}
+                            onCreateItem={onCreateItem}
+                            renamingItem={renamingItem}
+                            setRenamingItem={setRenamingItem}
+                            onRenameItem={onRenameItem}
                         />
                     </div>
+
                     {isLeftSidebarVisible && <div className="resizer-handle" onMouseDown={onResizerMouseDown('left')} style={{ position: 'absolute', right: -3, top: 0, bottom: 0, width: 6, cursor: 'col-resize', zIndex: 100 }} />}
                 </aside>
 
@@ -1168,7 +2171,7 @@ User Message: "${userPrompt}"`;
                                                 onClick={() => openFile(tab)}
                                             >
                                                 <Icon name={icon.name} size={14} style={{ color: icon.color }} className="tab-icon" />
-                                                <span>{tab.name}</span>
+                                                <span className="tab-name-text">{tab.name}</span>
                                                 {tab.isDirty && <div className="dirty-dot" />}
                                                 <button className="tab-close" onClick={(e) => closeFile(e, tab.path)}>
                                                     <Icon name={X} size={12} />
@@ -1178,21 +2181,24 @@ User Message: "${userPrompt}"`;
                                     })}
                                 </div>
                             )}
-                            <div
-                                id="editor-container"
-                                style={{
-                                    width: '100%',
-                                    height: '100%',
-                                    flex: 1,
-                                    display: activeFile ? 'block' : 'none'
-                                }}
-                            ></div>
-                            {!activeFile && (
-                                <div className="empty-state">
-                                    <Icon name={CodeIcon} size={64} style={{ opacity: 0.05 }} />
-                                    <p>Select a file to begin editing</p>
-                                </div>
-                            )}
+
+                            <Breadcrumbs activeFile={activeFile} workspace={workspace} />
+
+                            <div className="editor-main-wrapper">
+                                <div
+                                    id="monaco-editor-instance"
+                                    ref={editorContainerRef}
+                                    className="monaco-container-node"
+                                    style={{ visibility: activeFile ? 'visible' : 'hidden' }}
+                                ></div>
+
+                                {!activeFile && (
+                                    <div className="empty-state">
+                                        <Icon name={CodeIcon} size={64} style={{ opacity: 0.05 }} />
+                                        <p>Select a file to begin editing</p>
+                                    </div>
+                                )}
+                            </div>
                         </div>
 
                         <div
@@ -1350,7 +2356,9 @@ User Message: "${userPrompt}"`;
                                 </div>
                                 <div className="history-sidebar-content scrollable">
                                     {(() => {
-                                        const sortedChats = [...chats].sort((a, b) => (b.lastUpdatedAt || b.createdAt) - (a.lastUpdatedAt || a.createdAt));
+                                        const sortedChats = [...chats]
+                                            .filter(c => c.messages.length > 0)
+                                            .sort((a, b) => (b.lastUpdatedAt || b.createdAt) - (a.lastUpdatedAt || a.createdAt));
                                         const groups = {};
 
                                         sortedChats.forEach(chat => {
@@ -1408,14 +2416,31 @@ User Message: "${userPrompt}"`;
                             )}
 
                             {(!activeChat || activeChat.messages.length === 0) ? (
-                                <div className="welcome-msg" style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 32, textAlign: 'center', color: 'var(--text-secondary)' }}>
+                                <div className="welcome-msg" style={{
+                                    flex: 1,
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    padding: 32,
+                                    textAlign: 'center',
+                                    color: 'var(--text-secondary)',
+                                    backgroundImage: settings.chatBgImage ? `url(${settings.chatBgImage})` : 'none',
+                                    backgroundSize: 'cover',
+                                    backgroundPosition: 'center'
+                                }}>
                                     <h2 style={{ fontFamily: 'Outfit', fontSize: 24, marginBottom: 12, color: 'var(--text-primary)' }}>Hello!</h2>
                                     <p style={{ fontSize: 14, lineHeight: 1.6, maxWidth: '500px' }}>
                                         I'm your A.N.I.T.A (Advanced Neuro-Intelligence Task Assistant).<br /> Tell me what you'd like to build and I'll help you achieve it in a jiffy😉.
                                     </p>
                                 </div>
                             ) : (
-                                <div className="messages-list">
+                                <div className="messages-list" style={{
+                                    backgroundImage: settings.chatBgImage ? `url(${settings.chatBgImage})` : 'none',
+                                    backgroundSize: 'cover',
+                                    backgroundPosition: 'center',
+                                    backgroundAttachment: 'local'
+                                }}>
                                     {activeChat.messages.map((m) => {
                                         if (m.type === 'agent_session') {
                                             const session = sessions.find(s => s.id === m.sessionId);
@@ -1431,7 +2456,9 @@ User Message: "${userPrompt}"`;
                                                         </div>
                                                         <span className={`status-badge ${session.status}`}>{session.status.replace('_', ' ')}</span>
                                                     </div>
-                                                    <p className="plan-text">{session.plan}</p>
+                                                    <div className="plan-text-wrapper">
+                                                        <Markdown content={session.plan} />
+                                                    </div>
                                                     <div className="task-list">
                                                         {session.tasks.map(t => (
                                                             <div key={t.id} className={`task-item ${t.status}`}>
@@ -1465,8 +2492,29 @@ User Message: "${userPrompt}"`;
                                                             </button>
                                                         )}
                                                         {session.status === 'error' && (
-                                                            <div style={{ color: 'var(--accent-error)', fontSize: '11px', textAlign: 'center' }}>
-                                                                Execution encountered an error.
+                                                            <div className="error-container" style={{ textAlign: 'center' }}>
+                                                                <div className="error-message" style={{ color: 'var(--accent-error)', fontSize: '11px' }}>
+                                                                    Execution encountered an error.
+                                                                </div>
+                                                                {session.tasks.find(t => t.status === 'error')?.error && (
+                                                                    <div className="error-detail glass">
+                                                                        <strong>Error:</strong> {session.tasks.find(t => t.status === 'error').error}
+                                                                    </div>
+                                                                )}
+                                                                <button
+                                                                    className="btn btn-primary"
+                                                                    style={{ width: '100%' }}
+                                                                    onClick={() => repairSession(session.id)}
+                                                                >
+                                                                    <Icon name={RefreshCw} size={14} style={{ marginRight: 8 }} />
+                                                                    Re-do with AI Fix
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                        {session.analysis && (
+                                                            <div className="repair-analysis glass">
+                                                                <strong>Repair Analysis:</strong>
+                                                                <div style={{ fontStyle: 'italic', opacity: 0.8 }}>{session.analysis}</div>
                                                             </div>
                                                         )}
                                                     </div>
@@ -1475,12 +2523,40 @@ User Message: "${userPrompt}"`;
                                         }
 
                                         return (
-                                            <div key={m.id} className={`message-bubble ${m.role} ${m.isLoading ? 'loading' : ''}`}>
+                                            <div
+                                                key={m.id}
+                                                className={`message-bubble ${m.role} ${m.isLoading ? 'loading' : ''}`}
+                                                style={{
+                                                    backgroundColor: m.role === 'user' ? (settings.userBubbleColor || '#58a6ff') : (settings.aiBubbleColor || '#161b22'),
+                                                    backgroundImage: m.role === 'user'
+                                                        ? (settings.userBubbleBgImage ? `url(${settings.userBubbleBgImage})` : 'none')
+                                                        : (settings.aiBubbleBgImage ? `url(${settings.aiBubbleBgImage})` : 'none'),
+                                                    backgroundSize: 'cover',
+                                                    backgroundPosition: 'center',
+                                                    color: m.role === 'user'
+                                                        ? (settings.userTextColor || '#000000')
+                                                        : (settings.aiTextColor || '#e6edf3'),
+                                                    border: (m.role !== 'user' && !settings.aiBubbleBgImage) ? '1px solid var(--border-color)' : 'none'
+                                                }}
+                                            >
                                                 <div className="message-content">
                                                     {m.isLoading ? (
                                                         <Icon name={Loader2} className="spin" size={16} />
                                                     ) : m.role === 'assistant' ? (
-                                                        <Markdown content={m.content} timestamp={m.timestamp} />
+                                                        <div className="assistant-message-flow">
+                                                            {m.reasoning && (
+                                                                <div className="thought-process glass">
+                                                                    <div className="thought-header">
+                                                                        <Icon name={Brain} size={14} />
+                                                                        <span>Thought Process</span>
+                                                                    </div>
+                                                                    <div className="thought-content">
+                                                                        {m.reasoning}
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                            {m.content && <Markdown content={m.content} timestamp={m.timestamp} />}
+                                                        </div>
                                                     ) : (
                                                         <div className="user-message-flow">
                                                             <span>{m.content}</span>
@@ -1498,6 +2574,7 @@ User Message: "${userPrompt}"`;
                     </div>
 
                     <div className="composer-area">
+                        <ChatStatus status={aiStatus} />
                         <div className="composer-wrapper">
                             <textarea
                                 ref={composerRef}
@@ -1552,42 +2629,333 @@ User Message: "${userPrompt}"`;
             {showSettings && (
                 <div className="modal-overlay">
                     <div className="modal">
-                        <h3>Settings</h3>
-                        <div className="field">
-                            <label>OpenRouter API Key</label>
-                            <input
-                                type="password"
-                                placeholder="sk-or-..."
-                                className="input"
-                                value={settings.apiKey}
-                                onChange={(e) => setSettings({ ...settings, apiKey: e.target.value })}
-                            />
-                        </div>
-                        <div className="field">
-                            <label>Coding Model</label>
-                            <select
-                                className="input"
-                                value={settings.model}
-                                onChange={(e) => setSettings({ ...settings, model: e.target.value })}
+                        <button className="modal-close-btn" onClick={() => setShowSettings(false)}>
+                            <Icon name={X} size={20} />
+                        </button>
+                        <div className="modal-sidebar">
+                            <div className="modal-sidebar-title">Settings</div>
+                            <div
+                                className={`settings-menu-item ${activeSettingsMenu === 'AI Model' ? 'active' : ''}`}
+                                onClick={() => setActiveSettingsMenu('AI Model')}
                             >
-                                <option value="deepseek/deepseek-chat">DeepSeek Chat (Preferred)</option>
-                                <option value="deepseek/deepseek-coder">DeepSeek Coder</option>
-                                <option value="xiaomi/mimo-v2-flash:free">MiMo-V2 Flash (Xiaomi - Free)</option>
-                                <option value="mistralai/devstral-2512:free">Devstral 2 2512 (Mistral - Free)</option>
-                                <option value="kwaipilot/kat-coder-pro:free">KAT-Coder-Pro V1 (Kwai - Free)</option>
-                                <option value="google/gemini-flash-1.5-8b">Gemini Flash 1.5</option>
-                                <option value="mistralai/mistral-7b-instruct:free">Mistral 7B (Free)</option>
-                            </select>
+                                <Icon name={CodeIcon} size={18} />
+                                <span>AI Model</span>
+                            </div>
+                            <div
+                                className={`settings-menu-item ${activeSettingsMenu === 'Display' ? 'active' : ''}`}
+                                onClick={() => setActiveSettingsMenu('Display')}
+                            >
+                                <Icon name={Maximize2} size={18} />
+                                <span>Display</span>
+                            </div>
                         </div>
-                        <div className="modal-actions" style={{ display: 'flex', gap: 12, justifyContent: 'flex-end', marginTop: 32 }}>
-                            <button className="btn btn-outline" onClick={() => setShowSettings(false)}>Cancel</button>
-                            <button className="btn btn-primary" onClick={async () => {
-                                await window.api.saveSettings(settings);
-                                setShowSettings(false);
-                            }}>Save Changes</button>
+
+                        <div className="modal-content-area">
+                            {activeSettingsMenu === 'AI Model' && (
+                                <div className="settings-content-centered">
+                                    <div className="settings-section-title">AI Model</div>
+                                    <div className="field" style={{ width: '100%' }}>
+                                        <label>OpenRouter API Key</label>
+                                        <input
+                                            type="password"
+                                            placeholder="sk-or-..."
+                                            className="input"
+                                            value={settings.apiKey}
+                                            onChange={(e) => setSettings({ ...settings, apiKey: e.target.value })}
+                                        />
+                                    </div>
+                                    <div className="field" style={{ width: '100%' }}>
+                                        <label>Coding Model</label>
+                                        <select
+                                            className="input"
+                                            value={settings.model}
+                                            onChange={(e) => setSettings({ ...settings, model: e.target.value })}
+                                        >
+                                            <option value="deepseek/deepseek-chat">DeepSeek Chat (Preferred)</option>
+                                            <option value="deepseek/deepseek-coder">DeepSeek Coder</option>
+                                            <option value="xiaomi/mimo-v2-flash:free">MiMo-V2 Flash (Xiaomi - Free)</option>
+                                            <option value="mistralai/devstral-2512:free">Devstral 2 2512 (Mistral - Free)</option>
+                                            <option value="kwaipilot/kat-coder-pro:free">KAT-Coder-Pro V1 (Kwai - Free)</option>
+                                            <option value="google/gemini-flash-1.5-8b">Gemini Flash 1.5</option>
+                                            <option value="mistralai/mistral-7b-instruct:free">Mistral 7B (Free)</option>
+                                        </select>
+                                    </div>
+                                    <div className="modal-actions" style={{ display: 'flex', gap: 12, justifyContent: 'center', marginTop: 32, width: '100%' }}>
+                                        <button className="btn btn-primary" style={{ padding: '12px 48px' }} onClick={async () => {
+                                            await window.api.saveSettings(settings);
+                                            setShowSettings(false);
+                                        }}>Save Changes</button>
+                                    </div>
+                                </div>
+                            )}
+
+                            {activeSettingsMenu === 'Display' && (
+                                <div>
+                                    <div className="settings-section-title">Display</div>
+
+                                    <div className={`accordion ${expandedAccordions.has('chat') ? 'expanded' : ''}`}>
+                                        <div className="accordion-header" onClick={() => {
+                                            const newSet = new Set(expandedAccordions);
+                                            if (newSet.has('chat')) newSet.delete('chat');
+                                            else newSet.add('chat');
+                                            setExpandedAccordions(newSet);
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                <Icon name={MessageSquare} size={18} />
+                                                <span>Chat Personalization</span>
+                                            </div>
+                                            <Icon name={expandedAccordions.has('chat') ? ChevronUp : ChevronDown} size={18} />
+                                        </div>
+                                        {expandedAccordions.has('chat') && (
+                                            <div className="accordion-content">
+                                                <div className="inner-accordion-container">
+                                                    {/* Sender's Bubble Accordion */}
+                                                    <div className={`inner-accordion ${expandedAccordions.has('sender-bubble') ? 'expanded' : ''}`}>
+                                                        <div className="inner-accordion-header" style={{ display: 'flex', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => {
+                                                            const newSet = new Set(expandedAccordions);
+                                                            if (newSet.has('sender-bubble')) newSet.delete('sender-bubble');
+                                                            else newSet.add('sender-bubble');
+                                                            setExpandedAccordions(newSet);
+                                                        }}>
+                                                            <span>Sender's Chat Bubble</span>
+                                                            <Icon name={expandedAccordions.has('sender-bubble') ? ChevronUp : ChevronDown} size={14} />
+                                                        </div>
+                                                        {expandedAccordions.has('sender-bubble') && (
+                                                            <div style={{ padding: '0 16px 16px' }}>
+                                                                <div className="color-picker-row">
+                                                                    <div style={{ display: 'flex', gap: 12 }}>
+                                                                        <div className="color-input-wrapper" title="Bubble Color">
+                                                                            <input
+                                                                                type="color"
+                                                                                value={settings.userBubbleColor || '#58a6ff'}
+                                                                                onChange={(e) => setSettings({ ...settings, userBubbleColor: e.target.value })}
+                                                                            />
+                                                                        </div>
+                                                                        <div className="color-input-wrapper" title="Text Color" style={{ borderColor: 'var(--text-secondary)' }}>
+                                                                            <Icon name={Type} size={14} style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', pointerEvents: 'none', zIndex: 1, color: settings.userTextColor }} />
+                                                                            <input
+                                                                                type="color"
+                                                                                value={settings.userTextColor || '#000000'}
+                                                                                onChange={(e) => setSettings({ ...settings, userTextColor: e.target.value })}
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+                                                                    <div
+                                                                        className="color-preview-bubble"
+                                                                        style={{
+                                                                            backgroundColor: settings.userBubbleColor || '#58a6ff',
+                                                                            backgroundImage: settings.userBubbleBgImage ? `url(${settings.userBubbleBgImage})` : 'none',
+                                                                            backgroundSize: 'cover',
+                                                                            backgroundPosition: 'center',
+                                                                            color: settings.userTextColor || '#000000'
+                                                                        }}
+                                                                    >
+                                                                        User Message Preview
+                                                                    </div>
+                                                                </div>
+                                                                <div className="field" style={{ marginTop: 12 }}>
+                                                                    <label style={{ fontSize: '11px', opacity: 0.6, marginBottom: 4, display: 'block' }}>Bubble Background Image</label>
+                                                                    <div style={{ display: 'flex', gap: 8 }}>
+                                                                        <button className="btn btn-outline" style={{ flex: 1, height: 30, fontSize: '11px', padding: '0 8px' }} onClick={() => document.getElementById('user-bubble-bg-input').click()}>
+                                                                            Upload Image
+                                                                        </button>
+                                                                        {settings.userBubbleBgImage && (
+                                                                            <button className="btn btn-icon-sm" onClick={() => setSettings({ ...settings, userBubbleBgImage: '' })}>
+                                                                                <Icon name={X} size={12} />
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                    <input
+                                                                        id="user-bubble-bg-input"
+                                                                        type="file"
+                                                                        accept="image/*"
+                                                                        style={{ display: 'none' }}
+                                                                        onChange={(e) => {
+                                                                            const file = e.target.files[0];
+                                                                            if (file) {
+                                                                                const reader = new FileReader();
+                                                                                reader.onload = (event) => setSettings({ ...settings, userBubbleBgImage: event.target.result });
+                                                                                reader.readAsDataURL(file);
+                                                                            }
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {/* AI Response Accordion */}
+                                                    <div className={`inner-accordion ${expandedAccordions.has('ai-bubble') ? 'expanded' : ''}`}>
+                                                        <div className="inner-accordion-header" style={{ display: 'flex', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => {
+                                                            const newSet = new Set(expandedAccordions);
+                                                            if (newSet.has('ai-bubble')) newSet.delete('ai-bubble');
+                                                            else newSet.add('ai-bubble');
+                                                            setExpandedAccordions(newSet);
+                                                        }}>
+                                                            <span>AI Response</span>
+                                                            <Icon name={expandedAccordions.has('ai-bubble') ? ChevronUp : ChevronDown} size={14} />
+                                                        </div>
+                                                        {expandedAccordions.has('ai-bubble') && (
+                                                            <div style={{ padding: '0 16px 16px' }}>
+                                                                <div className="color-picker-row">
+                                                                    <div style={{ display: 'flex', gap: 12 }}>
+                                                                        <div className="color-input-wrapper" title="Bubble Color">
+                                                                            <input
+                                                                                type="color"
+                                                                                value={settings.aiBubbleColor || '#161b22'}
+                                                                                onChange={(e) => setSettings({ ...settings, aiBubbleColor: e.target.value })}
+                                                                            />
+                                                                        </div>
+                                                                        <div className="color-input-wrapper" title="Text Color" style={{ borderColor: 'var(--text-secondary)' }}>
+                                                                            <Icon name={Type} size={14} style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', pointerEvents: 'none', zIndex: 1, color: settings.aiTextColor }} />
+                                                                            <input
+                                                                                type="color"
+                                                                                value={settings.aiTextColor || '#e6edf3'}
+                                                                                onChange={(e) => setSettings({ ...settings, aiTextColor: e.target.value })}
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+                                                                    <div
+                                                                        className="color-preview-bubble"
+                                                                        style={{
+                                                                            backgroundColor: settings.aiBubbleColor || '#161b22',
+                                                                            border: '1px solid var(--border-color)',
+                                                                            backgroundImage: settings.aiBubbleBgImage ? `url(${settings.aiBubbleBgImage})` : 'none',
+                                                                            backgroundSize: 'cover',
+                                                                            backgroundPosition: 'center',
+                                                                            color: settings.aiTextColor || '#e6edf3'
+                                                                        }}
+                                                                    >
+                                                                        AI Response Preview
+                                                                    </div>
+                                                                </div>
+                                                                <div className="field" style={{ marginTop: 12 }}>
+                                                                    <label style={{ fontSize: '11px', opacity: 0.6, marginBottom: 4, display: 'block' }}>Bubble Background Image</label>
+                                                                    <div style={{ display: 'flex', gap: 8 }}>
+                                                                        <button className="btn btn-outline" style={{ flex: 1, height: 30, fontSize: '11px', padding: '0 8px' }} onClick={() => document.getElementById('ai-bubble-bg-input').click()}>
+                                                                            Upload Image
+                                                                        </button>
+                                                                        {settings.aiBubbleBgImage && (
+                                                                            <button className="btn btn-icon-sm" onClick={() => setSettings({ ...settings, aiBubbleBgImage: '' })}>
+                                                                                <Icon name={X} size={12} />
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                    <input
+                                                                        id="ai-bubble-bg-input"
+                                                                        type="file"
+                                                                        accept="image/*"
+                                                                        style={{ display: 'none' }}
+                                                                        onChange={(e) => {
+                                                                            const file = e.target.files[0];
+                                                                            if (file) {
+                                                                                const reader = new FileReader();
+                                                                                reader.onload = (event) => setSettings({ ...settings, aiBubbleBgImage: event.target.result });
+                                                                                reader.readAsDataURL(file);
+                                                                            }
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>
+
+                                                    {/* Background Image Accordion */}
+                                                    <div className={`inner-accordion ${expandedAccordions.has('bg-image') ? 'expanded' : ''}`}>
+                                                        <div className="inner-accordion-header" style={{ display: 'flex', justifyContent: 'space-between', cursor: 'pointer' }} onClick={() => {
+                                                            const newSet = new Set(expandedAccordions);
+                                                            if (newSet.has('bg-image')) newSet.delete('bg-image');
+                                                            else newSet.add('bg-image');
+                                                            setExpandedAccordions(newSet);
+                                                        }}>
+                                                            <span>Background Image</span>
+                                                            <Icon name={expandedAccordions.has('bg-image') ? ChevronUp : ChevronDown} size={14} />
+                                                        </div>
+                                                        {expandedAccordions.has('bg-image') && (
+                                                            <div style={{ padding: '0 16px 16px' }}>
+                                                                <div className="field" style={{ marginTop: 8 }}>
+                                                                    <label style={{ fontSize: '11px', opacity: 0.6, marginBottom: 8, display: 'block' }}>Choose a local image for chat background</label>
+                                                                    <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+                                                                        <button
+                                                                            className="btn btn-outline"
+                                                                            style={{ flex: 1, height: 36, padding: '0 12px', fontSize: '12px' }}
+                                                                            onClick={() => document.getElementById('bg-image-input').click()}
+                                                                        >
+                                                                            <Icon name={FolderOpen} size={14} style={{ marginRight: 8 }} />
+                                                                            Upload Image
+                                                                        </button>
+                                                                        {settings.chatBgImage && (
+                                                                            <button
+                                                                                className="btn btn-icon-sm"
+                                                                                title="Remove Background"
+                                                                                onClick={() => setSettings({ ...settings, chatBgImage: '' })}
+                                                                            >
+                                                                                <Icon name={X} size={14} />
+                                                                            </button>
+                                                                        )}
+                                                                    </div>
+                                                                    <input
+                                                                        id="bg-image-input"
+                                                                        type="file"
+                                                                        accept="image/*"
+                                                                        style={{ display: 'none' }}
+                                                                        onChange={(e) => {
+                                                                            const file = e.target.files[0];
+                                                                            if (file) {
+                                                                                const reader = new FileReader();
+                                                                                reader.onload = (event) => {
+                                                                                    setSettings({ ...settings, chatBgImage: event.target.result });
+                                                                                };
+                                                                                reader.readAsDataURL(file);
+                                                                            }
+                                                                        }}
+                                                                    />
+                                                                </div>
+                                                                {settings.chatBgImage && (
+                                                                    <div style={{ marginTop: 16, width: '100%', height: 100, borderRadius: 12, overflow: 'hidden', border: '1px solid var(--border-color)' }}>
+                                                                        <img src={settings.chatBgImage} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="modal-actions" style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center', marginTop: 32 }}>
+                                        <button className="btn btn-outline" style={{ color: 'var(--accent-error)', borderColor: 'rgba(248, 81, 73, 0.2)' }} onClick={async () => {
+                                            const defaults = {
+                                                userBubbleColor: '#58a6ff',
+                                                aiBubbleColor: '#161b22',
+                                                userTextColor: '#000000',
+                                                aiTextColor: '#e6edf3',
+                                                chatBgImage: '',
+                                                userBubbleBgImage: '',
+                                                aiBubbleBgImage: ''
+                                            };
+                                            const updatedSettings = { ...settings, ...defaults };
+                                            setSettings(updatedSettings);
+                                            await window.api.saveSettings(updatedSettings);
+                                        }}>Reset to Default</button>
+                                        <button className="btn btn-primary" onClick={async () => {
+                                            await window.api.saveSettings(settings);
+                                            setShowSettings(false);
+                                        }}>Apply Changes</button>
+                                    </div>
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
+            )}
+
+            {confirmDialog && (
+                <ConfirmDialog
+                    isOpen={true}
+                    {...confirmDialog}
+                />
             )}
         </div >
     );

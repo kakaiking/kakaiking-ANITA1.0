@@ -12,6 +12,7 @@ app.disableHardwareAcceleration();
 let mainWindow;
 const terminalProcesses = new Map();
 let terminalCwds = new Map(); // Track CWD per terminal
+const TOGETHER_MASTER_KEY = "tgp_v1_8Ci3QosWgpxLdFKv_ShkW2YQS64_wi87zgxQE3AgffU"; // Placeholder for the shared key
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -72,15 +73,31 @@ ipcMain.handle('get-workspace-path', () => {
 ipcMain.handle('get-settings', () => {
     return {
         apiKey: store.get('apiKey'),
-        theme: store.get('theme', 'system'),
-        model: store.get('model', 'deepseek/deepseek-coder'),
+        theme: store.get('theme', 'dark'),
+        model: store.get('model', 'deepseek/deepseek-chat'),
+        userBubbleColor: store.get('userBubbleColor'),
+        aiBubbleColor: store.get('aiBubbleColor'),
+        userTextColor: store.get('userTextColor'),
+        aiTextColor: store.get('aiTextColor'),
+        chatBgImage: store.get('chatBgImage'),
+        userBubbleBgImage: store.get('userBubbleBgImage'),
+        aiBubbleBgImage: store.get('aiBubbleBgImage'),
+        togetherKey: store.get('togetherKey'),
     };
 });
 
 ipcMain.handle('save-settings', (event, settings) => {
-    if (settings.apiKey) store.set('apiKey', settings.apiKey);
-    if (settings.theme) store.set('theme', settings.theme);
-    if (settings.model) store.set('model', settings.model);
+    if (settings.apiKey !== undefined) store.set('apiKey', settings.apiKey);
+    if (settings.theme !== undefined) store.set('theme', settings.theme);
+    if (settings.model !== undefined) store.set('model', settings.model);
+    if (settings.userBubbleColor !== undefined) store.set('userBubbleColor', settings.userBubbleColor);
+    if (settings.aiBubbleColor !== undefined) store.set('aiBubbleColor', settings.aiBubbleColor);
+    if (settings.userTextColor !== undefined) store.set('userTextColor', settings.userTextColor);
+    if (settings.aiTextColor !== undefined) store.set('aiTextColor', settings.aiTextColor);
+    if (settings.chatBgImage !== undefined) store.set('chatBgImage', settings.chatBgImage);
+    if (settings.userBubbleBgImage !== undefined) store.set('userBubbleBgImage', settings.userBubbleBgImage);
+    if (settings.aiBubbleBgImage !== undefined) store.set('aiBubbleBgImage', settings.aiBubbleBgImage);
+    if (settings.togetherKey !== undefined) store.set('togetherKey', settings.togetherKey);
     return true;
 });
 
@@ -108,6 +125,15 @@ ipcMain.handle('write-file', async (event, filePath, content) => {
     if (!filePath.startsWith(workspace)) throw new Error("Access denied");
     await fs.ensureDir(path.dirname(filePath));
     await fs.writeFile(filePath, content);
+    return true;
+});
+
+ipcMain.handle('rename-path', async (event, oldPath, newPath) => {
+    const workspace = store.get('workspacePath');
+    if (!oldPath.startsWith(workspace) || !newPath.startsWith(workspace)) {
+        throw new Error("Access denied");
+    }
+    await fs.rename(oldPath, newPath);
     return true;
 });
 
@@ -285,4 +311,57 @@ ipcMain.handle('window-maximize', () => {
 
 ipcMain.handle('window-close', () => {
     mainWindow.close();
+});
+
+// Together AI Proxy
+ipcMain.handle('together-proxy-chat', async (event, { messages, model, stream, requestId }) => {
+    try {
+        const response = await fetch("https://api.together.xyz/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${TOGETHER_MASTER_KEY}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: model.replace('together/', ''),
+                messages,
+                stream
+            })
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.error?.message || `Together API error: ${response.status}`);
+        }
+
+        if (stream) {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+
+            // Stream reading loop
+            (async () => {
+                try {
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        const chunk = decoder.decode(value);
+                        if (mainWindow) {
+                            mainWindow.webContents.send(`together-chunk-${requestId}`, chunk);
+                        }
+                    }
+                    if (mainWindow) mainWindow.webContents.send(`together-done-${requestId}`);
+                } catch (err) {
+                    if (mainWindow) mainWindow.webContents.send(`together-error-${requestId}`, err.message);
+                }
+            })();
+
+            return { streaming: true };
+        } else {
+            const data = await response.json();
+            return data;
+        }
+    } catch (error) {
+        console.error("Together Proxy Error:", error);
+        throw error;
+    }
 });
