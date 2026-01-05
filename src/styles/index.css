@@ -734,13 +734,21 @@ body {
 
 /* Composer Area */
 .composer-area {
-  padding: 12px 20px 20px;
-  background: var(--bg-secondary);
-  border-top: 1px solid var(--border-color);
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0 20px 24px;
+  background: transparent;
+  z-index: 10;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  pointer-events: none;
+  /* Let clicks pass through area to messages if not on wrapper */
 }
+
+
 
 /* Chat Status Indicator */
 .chat-status-indicator {
@@ -833,11 +841,19 @@ body {
 
 .composer-wrapper {
   position: relative;
-  border-radius: 12px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  min-height: 48px;
+  border-radius: 16px;
+  background: rgba(13, 17, 23, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   transition: var(--transition);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  pointer-events: all;
 }
 
 .composer-wrapper:focus-within {
@@ -846,13 +862,13 @@ body {
 }
 
 .composer-input {
-  width: 100%;
+  flex: 1;
   min-height: 24px;
   max-height: 300px;
   background: transparent;
   border: none;
   color: var(--text-primary);
-  padding: 12px 16px;
+  padding: 12px 4px;
   font-family: inherit;
   font-size: 14px;
   resize: none;
@@ -861,22 +877,34 @@ body {
   overflow-y: auto;
 }
 
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 .send-btn:disabled {
   background: var(--text-muted);
   cursor: not-allowed;
 }
 
-.composer-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 8px 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+@keyframes fadeInOut {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .composer-mode-container {
   position: relative;
   z-index: 10;
+  animation: fadeInOut 0.3s ease forwards;
 }
 
 /* Custom Select UI */
@@ -888,7 +916,8 @@ body {
 .custom-select-trigger {
   display: flex;
   align-items: center;
-  padding: 6px 14px;
+  height: 32px;
+  padding: 0 12px;
   background: rgba(255, 255, 255, 0.04);
   border: 1px solid var(--border-color);
   border-radius: 10px;
@@ -899,7 +928,7 @@ body {
   cursor: pointer;
   transition: var(--transition);
   outline: none;
-  min-width: 100px;
+  min-width: 80px;
 }
 
 .custom-select-trigger:hover {
@@ -1406,14 +1435,16 @@ body {
 
 .messages-list {
   flex: 1;
-  padding: 16px 12px 16px 16px;
-  /* Adjust padding for slim scrollbar */
+  padding: 16px 12px 140px 16px;
+  /* Increased bottom padding for floating composer */
   display: flex;
   flex-direction: column;
   gap: 16px;
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--border-color) transparent;
+  mask-image: linear-gradient(to bottom, black 90%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 90%, transparent 100%);
 }
 
 .message-bubble {

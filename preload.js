@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
     deletePath: (path) => ipcRenderer.invoke('delete-path', path),
     createFolder: (path) => ipcRenderer.invoke('create-folder', path),
     renamePath: (oldPath, newPath) => ipcRenderer.invoke('rename-path', oldPath, newPath),
+    pathExists: (path) => ipcRenderer.invoke('path-exists', path),
 
     // Shell
     executeCommand: (terminalId, command) => ipcRenderer.invoke('execute-command', { terminalId, command }),

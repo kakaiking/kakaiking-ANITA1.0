@@ -415,7 +415,16 @@ const Markdown = ({ content, timestamp }) => {
         if (!content) return '';
         if (!window.marked || !window.DOMPurify) return content;
         try {
-            let rawHtml = window.marked.parse(content);
+            let displayContent = content;
+            if (timestamp) {
+                // Check if message is raw JSON but failed detection
+                const trimmed = content.trim();
+                if (trimmed.startsWith('{') && trimmed.endsWith('}') && !content.includes('```')) {
+                    displayContent = '```json\n' + content + '\n```';
+                }
+            }
+
+            let rawHtml = window.marked.parse(displayContent);
 
             if (timestamp) {
                 // Inject timestamp into the last paragraph for efficient space usage
@@ -766,7 +775,9 @@ const App = () => {
         chatBgImage: '',
         userBubbleBgImage: '',
         aiBubbleBgImage: '',
-        togetherKey: ''
+        togetherKey: '',
+        startupHelloColor: '#e6edf3',
+        startupMsgColor: '#8b949e'
     });
     const [showSettings, setShowSettings] = useState(false);
     const [activeSettingsMenu, setActiveSettingsMenu] = useState('AI Model');
@@ -793,6 +804,8 @@ const App = () => {
     const [renamingItem, setRenamingItem] = useState(null); // { path, oldName }
     const [aiStatus, setAiStatus] = useState(null); // 'thinking', 'generating', 'loading', 'processing'
     const [confirmDialog, setConfirmDialog] = useState(null); // { title, message, onConfirm, onCancel, confirmText, cancelText, type }
+    const [isAgentExecuting, setIsAgentExecuting] = useState(false);
+    const stopExecutionRef = useRef(false);
 
 
 
@@ -816,11 +829,13 @@ const App = () => {
         }
         setIsPlanning(false);
         setAiStatus(null);
+        setIsAgentExecuting(false);
+        stopExecutionRef.current = true;
         setChats(prev => prev.map(c => ({
             ...c,
             messages: c.messages.filter(m => !m.isLoading)
         })));
-        addLog(null, "AI request cancelled by user.");
+        addLog(null, "Operation cancelled by user.");
     };
 
     // Chat Sessions State
@@ -858,7 +873,9 @@ const App = () => {
                 chatBgImage: '',
                 userBubbleBgImage: '',
                 aiBubbleBgImage: '',
-                togetherKey: ''
+                togetherKey: '',
+                startupHelloColor: '#e6edf3',
+                startupMsgColor: '#8b949e'
             };
             const s = await window.api.getSettings();
             if (s) {
@@ -1501,7 +1518,7 @@ const App = () => {
     };
 
     const handleSubmitProposal = async () => {
-        if (isPlanning) return handleStop();
+        if (isPlanning || isAgentExecuting) return handleStop();
         if (!composerInput.trim()) return;
         if (!workspace) {
             addLog(null, "Please select a workspace first.", "error");
@@ -1548,35 +1565,38 @@ const App = () => {
 
             const systemInstruction = composerMode === 'agent'
                 ? `You are a professional AI developer on Windows. 
-The user has asked for an implementation plan (AGENT MODE).
-YOUR ROLE:
-1. If the requirements are absolutely clear, provide ONLY the JSON object for the plan.
-2. If any details are missing or ambiguous, do NOT provide the JSON yet. Instead, ask for clarification in Markdown.
-3. Once the user says 'create plan' or provides the missing info, then output the JSON.
+YOUR CORE WORKFLOW:
+1. EXPLORATION & ANALYSIS: If starting a task in an existing project, ask to see relevant files or structure FIRST. Do not assume.
+2. REQUIREMENT CHECK: Ensure goal is 100% clear. ask 2-3 specific technical questions if needed.
+3. CAUTIOUS PLANNING: Output a strict JSON Implementation Plan. 
+   - Every plan MUST prioritize modifying existing code safely rather than rewriting everything.
+   - Include 'verification' tasks (e.g., run tests, check output).
 
-CRITICAL: When outputting the JSON plan, provide ONLY the JSON block. No descriptions outside it.
-
-JSON FORMAT:
+STRICT JSON TEMPLATE:
 {
-  "plan": "Detailed explanation of strategy",
+  "plan": "Short strategy description focusing on incremental changes",
   "tasks": [
-    { "id": 1, "description": "...", "type": "file_edit", "path": "...", "content": "..." },
-    { "id": 2, "description": "...", "type": "terminal", "command": "..." }
+    { "id": 1, "description": "Check current state", "type": "terminal", "command": "dir" },
+    { "id": 2, "description": "Apply fix", "type": "file_edit", "path": "src/App.js", "content": "... new content ..." },
+    { "id": 3, "description": "Verify changes", "type": "terminal", "command": "npm test" }
   ]
 }`
                 : `You are a professional AI developer on Windows. 
 
-WORKFLOW GUIDELINES:
-1. Your secondary goal is to understand the user's requirements through conversation.
-2. Ask clarifying questions to ensure you have all technical details.
-3. DO NOT generate an implementation plan (JSON) until the user explicitly asks for one (e.g., 'create a plan', 'start implementation', 'go ahead').
-4. Once requirements are understood, tell the user: "I understand the requirements. Please give the command to create the implementation plan when you're ready."
-5. ONLY when commanded to create the plan, use the JSON format below.
+YOUR CORE WORKFLOW:
+1. CONVERSATION: Understand the user's needs. Ask clarifying questions.
+2. ANALYTICAL APPROACH: Always suggest checking existing files before proposing major changes.
+3. HANDOFF: Once you understand the task, say: "I have all the details. Would you like me to generate the implementation plan now?"
+4. PLAN GENERATION: When the user asks for the plan, respond ONLY with a strict JSON object. No markdown backticks.
 
-JSON FORMAT (Use ONLY when asked to create a plan):
+CRITICAL: The JSON must be perfectly valid. 
+Example of a valid response:
 {
-  "plan": "explanation",
-  "tasks": [ ... ]
+  "plan": "Analyze and update test file",
+  "tasks": [
+    { "id": 1, "description": "Analyze existing code", "type": "terminal", "command": "type src\\index.js" },
+    { "id": 2, "description": "Update logic", "type": "file_edit", "path": "src/index.js", "content": "..." }
+  ]
 }`;
 
             const messagesForAI = updatedMessages
@@ -1604,7 +1624,8 @@ JSON FORMAT (Use ONLY when asked to create a plan):
                                     ...m,
                                     content: isJSON ? "_Anita is drafting a technical implementation plan..._" : streamContent,
                                     reasoning: streamReasoning,
-                                    isLoading: !streamContent && !streamReasoning
+                                    isLoading: !streamContent && !streamReasoning,
+                                    isDrafting: isJSON // Helpful for UI logic
                                 } : m
                             )
                         };
@@ -1618,20 +1639,112 @@ JSON FORMAT (Use ONLY when asked to create a plan):
             let proposal = null;
             let isPlan = false;
 
-            // Robust JSON extraction: Find the first { and last }
-            const firstBrace = response.indexOf('{');
-            const lastBrace = response.lastIndexOf('}');
+            // Step 1: Broad detection - find the best JSON-like block that mentions tasks
+            let jsonCandidate = "";
+            const jsonRegex = /\{[\s\S]*?(plan|tasks)[\s\S]*\}/i;
+            const match = response.match(jsonRegex);
 
-            if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
-                const jsonCandidate = response.substring(firstBrace, lastBrace + 1);
+            if (match) {
+                jsonCandidate = match[0];
+            } else {
+                const firstBrace = response.indexOf('{');
+                const lastBrace = response.lastIndexOf('}');
+                if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+                    jsonCandidate = response.substring(firstBrace, lastBrace + 1);
+                }
+            }
+
+            if (jsonCandidate) {
                 try {
+                    // Try parsing directly FIRST (safest)
                     const parsed = JSON.parse(jsonCandidate);
-                    if (parsed.tasks && Array.isArray(parsed.tasks)) {
+                    if (parsed.tasks || parsed.plan) {
                         proposal = parsed;
                         isPlan = true;
                     }
                 } catch (e) {
-                    console.warn("Found JSON-like structure but failed to parse:", e);
+                    // Step 2: Sloppy JSON Recovery (Intermediate)
+                    try {
+                        let cleaned = jsonCandidate
+                            .replace(/\/\/.*$/gm, '') // Remove comments
+
+                            // 1. Standardize main keys (plan, tasks)
+                            .replace(/([{,]\s*)"?plan"?\s*[:\s]\s*/gi, '$1"plan": ')
+                            .replace(/([{,]\s*)"?tasks"?\s*[:\s]\s*/gi, '$1"tasks": ')
+
+                            // 2. Fix the "Key Value," pattern (missing quotes and colon)
+                            // Matches: id 1, or description Create a page,
+                            .replace(/([{,]\s*)"?(id|description|task|type|path|content|command)"?\s+([^,{}]+)(?=[,}]|$)/gi, (m, p1, p2, p3) => {
+                                let val = p3.trim();
+                                if (/^\d+$/.test(val)) return p1 + '"' + p2.toLowerCase() + '": ' + val;
+                                if (!val.startsWith('"')) val = '"' + val.replace(/"/g, '\\"') + '"';
+                                return p1 + '"' + p2.toLowerCase() + '": ' + val;
+                            })
+
+                            // 3. Fix unquoted string values for normally quoted keys
+                            .replace(/("plan"|"description"|"path"|"content"|"command")\s*[:]\s*([^"{}\[\]\s\d][^,{}\[\]\n]*?)\s*(?=[,\]\}]|$)/g, '$1: "$2"')
+
+                            // 4. Standard JSON fixes
+                            .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":') // Quote keys
+                            .replace(/:\s*'([^']*)'/g, ': "$1"') // Fix single quotes
+                            .replace(/,\s*([}\]])/g, '$1'); // Trailing commas
+
+                        // 5. Fix common "tasks as object" hallucination
+                        if (cleaned.includes('"tasks": {') && !cleaned.includes('"tasks": [')) {
+                            cleaned = cleaned.replace(/"tasks":\s*\{/, '"tasks": [');
+                            cleaned = cleaned.replace(/\}\s*$/m, ']}');
+                        }
+
+                        const parsed = JSON.parse(cleaned);
+                        if (parsed.tasks || parsed.plan) {
+                            proposal = parsed;
+                            isPlan = true;
+                        }
+                    } catch (e2) {
+                        // Step 3: Synthetic Recovery (Absolute Fallback)
+                        // If parsing is impossible, we treat the text as an unstructured property list
+                        const planMatch = jsonCandidate.match(/"?plan"?\s*[:\s]\s*["']?([^"'\n]*)/i);
+
+                        let tasksSection = "";
+                        const tasksHeaderMatch = jsonCandidate.match(/"?tasks"?\s*[:\s]\s*[\[\{]([\s\S]*)/i);
+                        tasksSection = tasksHeaderMatch ? tasksHeaderMatch[1] : jsonCandidate;
+
+                        if (tasksSection) {
+                            const taskItems = [];
+                            // Split by likely task boundaries (id, description, or the word "task")
+                            const taskBlocks = tasksSection.split(/(?=\{?[\s\n]*"?id"?)|(?=\{?[\s\n]*"?description"?)|(?=\{?[\s\n]*"?task"?)|(?=\s*\}\s*,?\s*\{)/gi);
+
+                            taskBlocks.forEach((block, idx) => {
+                                // Extract anything that looks like a property
+                                const dM = block.match(/"?(?:description|task|name)"?\s*[:\s]\s*["']?([^"';\n]*)/i);
+                                const iM = block.match(/"?id"?\s*[:\s]\s*["']?(\d+)/i);
+                                const cM = block.match(/"?command"?\s*[:\s]\s*["']?([^"';\n]*)/i);
+                                const pM = block.match(/"?path"?\s*[:\s]\s*["']?([^"';\n]*)/i);
+                                const tM = block.match(/"?type"?\s*[:\s]\s*["']?([^"';\n]*)/i);
+                                const coM = block.match(/"?content"?\s*[:\s]\s*["']?([^"';\n]*)/i);
+
+                                if (dM || cM || pM) {
+                                    taskItems.push({
+                                        id: iM ? parseInt(iM[1]) : (idx + 1),
+                                        description: (dM ? dM[1] : (cM ? cM[1] : `Task ${idx + 1}`)).replace(/["'}]$|^\s*["']/, '').trim(),
+                                        type: (tM ? tM[1] : (cM ? 'terminal' : 'file_edit')).replace(/["'}]$|^\s*["']/, '').trim(),
+                                        command: (cM ? cM[1] : '').replace(/["'}]$|^\s*["']/, '').trim(),
+                                        path: (pM ? pM[1] : '').replace(/["'}]$|^\s*["']/, '').trim(),
+                                        content: (coM ? coM[1] : '').replace(/["'}]$|^\s*["']/, '').trim()
+                                    });
+                                }
+                            });
+
+                            if (taskItems.length > 0) {
+                                proposal = {
+                                    plan: (planMatch ? planMatch[1] : "Custom implementation plan").replace(/["'}]$|^\s*["']/, '').trim(),
+                                    tasks: taskItems.filter(t => t.description || t.command)
+                                };
+                                isPlan = true;
+                                addLog(null, "⚡ Anita successfully reconstructed a corrupted planning response.");
+                            }
+                        }
+                    }
                 }
             }
 
@@ -1744,7 +1857,12 @@ User Message: "${userPrompt}"`;
         addLog(null, `Requesting AI repair for: ${failedTask.description}...`);
 
         const repairPrompt = `You are a professional AI developer on Windows. 
-One of the tasks in your implementation plan has failed. Analyze the error and provide a fix.
+One of the tasks in your implementation plan has failed. Analyze the error and provide a precision fix.
+
+CRITICAL PROTOCOL:
+1. ANALYSIS: Determine exactly why it failed. Is it a missing dependency? A syntax error? A directory that doesn't exist?
+2. INCREMENTAL FIX: Do NOT regenerate the whole project. Only provide the specific tasks needed to fix the error and continue.
+3. VERIFICATION: Include a task to verify the fix works (e.g. check a file, run a build step).
 
 ORIGINAL GOAL: "${session.goal}"
 CURRENT PLAN: ${session.plan}
@@ -1758,16 +1876,16 @@ ${failedTask.path ? `- Path: ${failedTask.path}` : ''}
 ERROR ENCOUNTERED:
 "${failedTask.error || 'Unknown Error'}"
 
-REMAINING TASKS THAT WERE PENDING:
+REMAINING TASKS:
 ${session.tasks.filter(t => t.status === 'pending').map(t => `- ${t.description}`).join('\n')}
 
-CRITICAL: Respond ONLY with a JSON object. Provide a sequence of tasks to fix the error and move forward significantly to complete the original goal.
+Respond ONLY with a JSON object.
 JSON FORMAT:
 {
-  "analysis": "What went wrong and how to fix it",
+  "analysis": "Root cause analysis and fix strategy",
   "plan": "The updated strategy for the new plan",
   "tasks": [
-    { "description": "Fix step...", "type": "terminal", "command": "..." },
+    { "description": "Verification/Fix step...", "type": "terminal", "command": "..." },
     { "description": "Continuing step...", "type": "file_edit", "path": "...", "content": "..." }
   ]
 }`;
@@ -1776,12 +1894,37 @@ JSON FORMAT:
             const agentModel = "together/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo";
             const response = await ai.chat([{ role: 'user', content: repairPrompt }], null, null, agentModel);
             let repairProposal = null;
-            const firstBrace = response.indexOf('{');
-            const lastBrace = response.lastIndexOf('}');
+            const jsonRegex = /\{[\s\S]*"tasks"[\s\S]*\}/;
+            const match = response.match(jsonRegex);
+            let jsonCandidate = "";
 
-            if (firstBrace !== -1 && lastBrace !== -1) {
-                const jsonCandidate = response.substring(firstBrace, lastBrace + 1);
-                repairProposal = JSON.parse(jsonCandidate);
+            if (match) {
+                jsonCandidate = match[0];
+            } else {
+                const firstBrace = response.indexOf('{');
+                const lastBrace = response.lastIndexOf('}');
+                if (firstBrace !== -1 && lastBrace !== -1) {
+                    jsonCandidate = response.substring(firstBrace, lastBrace + 1);
+                }
+            }
+
+            if (jsonCandidate) {
+                try {
+                    repairProposal = JSON.parse(jsonCandidate);
+                } catch (e) {
+                    try {
+                        const cleaned = jsonCandidate
+                            .replace(/\/\/.*$/gm, '')
+                            .replace(/([{,]\s*)([a-zA-Z0-9_]+)\s*:/g, '$1"$2":')
+                            .replace(/:\s*'([^']*)'/g, ': "$1"')
+                            .replace(/"([a-zA-Z0-9_]+)"\s+"([^"]*)"/g, '"$1": "$2"')
+                            .replace(/,\s*([}\]])/g, '$1')
+                            .replace(/"\s*"\s*:/g, '"description":');
+                        repairProposal = JSON.parse(cleaned);
+                    } catch (e2) {
+                        console.warn("Repair sloppy parser failed", e2);
+                    }
+                }
             }
 
             if (repairProposal && repairProposal.tasks && Array.isArray(repairProposal.tasks)) {
@@ -1835,6 +1978,8 @@ JSON FORMAT:
 
         session.status = 'running';
         setSessions([...sessions]);
+        setIsAgentExecuting(true);
+        stopExecutionRef.current = false;
         addLog(null, `Execution started for: ${session.goal}`);
 
         let currentIndex = 0;
@@ -1844,6 +1989,12 @@ JSON FORMAT:
             const currentSessions = await window.api.getSessions() || sessions;
             const currentSession = currentSessions.find(s => s.id === sessionId);
             if (!currentSession || currentIndex >= currentSession.tasks.length) break;
+
+            if (stopExecutionRef.current) {
+                currentSession.status = 'error';
+                addLog(null, "Execution stopped by user.", "warning");
+                break;
+            }
 
             const task = currentSession.tasks[currentIndex];
 
@@ -1862,11 +2013,58 @@ JSON FORMAT:
             try {
                 if (task.type === 'file_edit') {
                     const fullPath = workspace + '\\' + task.path;
-                    await window.api.writeFile(fullPath, task.content || "");
-                    addLog(null, `File written: ${task.path}`);
+                    addLog(null, `Analyzing file: ${task.path}...`);
+
+                    const exists = await window.api.pathExists(fullPath);
+                    let shouldWrite = true;
+
+                    if (exists) {
+                        const currentContent = await window.api.readFile(fullPath);
+                        if (currentContent === task.content) {
+                            addLog(null, `No changes needed for ${task.path} (already up to date).`, 'info');
+                            shouldWrite = false;
+                        } else {
+                            addLog(null, `Changes detected. Updating ${task.path}...`);
+                        }
+                    } else {
+                        addLog(null, `Creating new file: ${task.path}`);
+                    }
+
+                    if (shouldWrite) {
+                        await window.api.writeFile(fullPath, task.content || "");
+                        addLog(null, `File ${exists ? 'updated' : 'created'}: ${task.path}`);
+                    }
+
+                    // Verification / Lint Step
+                    addLog(null, `Verifying changes for ${task.path}...`);
+                    const pkgContent = await window.api.readFile(workspace + '\\package.json').catch(() => null);
+                    if (pkgContent) {
+                        try {
+                            const pkg = JSON.parse(pkgContent);
+                            if (pkg.scripts && pkg.scripts.lint) {
+                                addLog(null, "Running project lint tests...");
+                                const lintRes = await window.api.executeCommand(activeTerminalId, 'npm run lint');
+                                if (!lintRes.success) {
+                                    addLog(null, `Lint check failed: ${lintRes.stderr || lintRes.error}`, 'error');
+                                    resultSuccess = false;
+                                    resultError = "Lint check failed after modification.";
+                                } else {
+                                    addLog(null, "Lint verification passed.");
+                                    resultSuccess = true;
+                                }
+                            } else {
+                                addLog(null, "No lint script found, verification complete.");
+                                resultSuccess = true;
+                            }
+                        } catch (e) {
+                            resultSuccess = true;
+                        }
+                    } else {
+                        resultSuccess = true;
+                    }
+
                     loadFiles(workspace);
-                    if (activeFile === fullPath && monacoRef.current) monacoRef.current.setValue(task.content);
-                    resultSuccess = true;
+                    if (activeFile === fullPath && monacoRef.current && shouldWrite) monacoRef.current.setValue(task.content);
                 } else if (task.type === 'terminal') {
                     const result = await new Promise((resolve) => {
                         setConfirmDialog({
@@ -1877,6 +2075,8 @@ JSON FORMAT:
                             type: 'info',
                             onConfirm: async () => {
                                 setConfirmDialog(null);
+                                setIsTerminalVisible(true);
+                                setIsCentralPanelVisible(true);
                                 const res = await window.api.executeCommand(activeTerminalId, task.command);
                                 resolve(res);
                             },
@@ -1936,6 +2136,7 @@ JSON FORMAT:
             window.api.saveSessions(finalSessions);
         }
 
+        setIsAgentExecuting(false);
         loadFiles(workspace);
         const usage = await window.api.getTokenUsage();
         if (usage) setTokenUsage(usage);
@@ -2429,9 +2630,9 @@ JSON FORMAT:
                                     backgroundSize: 'cover',
                                     backgroundPosition: 'center'
                                 }}>
-                                    <h2 style={{ fontFamily: 'Outfit', fontSize: 24, marginBottom: 12, color: 'var(--text-primary)' }}>Hello!</h2>
-                                    <p style={{ fontSize: 14, lineHeight: 1.6, maxWidth: '500px' }}>
-                                        I'm your A.N.I.T.A (Advanced Neuro-Intelligence Task Assistant).<br /> Tell me what you'd like to build and I'll help you achieve it in a jiffy😉.
+                                    <h2 style={{ fontFamily: 'Outfit', fontSize: 24, marginBottom: 12, color: settings.startupHelloColor || 'var(--text-primary)' }}>Hello!</h2>
+                                    <p style={{ fontSize: 14, lineHeight: 1.6, maxWidth: '500px', color: settings.startupMsgColor || 'var(--text-secondary)' }}>
+                                        I'm your A.N.I.T.A (Advanced Neuro-Intelligent Task Assistant).<br /> Tell me what you'd like to build and I'll help you achieve it in a jiffy😉.
                                     </p>
                                 </div>
                             ) : (
@@ -2575,7 +2776,7 @@ JSON FORMAT:
 
                     <div className="composer-area">
                         <ChatStatus status={aiStatus} />
-                        <div className="composer-wrapper">
+                        <div className={`composer-wrapper ${composerInput ? 'has-text' : ''}`}>
                             <textarea
                                 ref={composerRef}
                                 className="composer-input"
@@ -2596,29 +2797,31 @@ JSON FORMAT:
                                     }
                                 }}
                             />
-                            <div className="composer-footer">
-                                <div className="composer-mode-container">
-                                    <CustomSelect
-                                        value={composerMode}
-                                        onChange={setComposerMode}
-                                        options={[
-                                            {
-                                                value: 'chat',
-                                                label: 'Chat',
-                                                icon: MessageSquare,
-                                                description: 'Direct AI chat for questions and guidance'
-                                            },
-                                            {
-                                                value: 'agent',
-                                                label: 'Agent',
-                                                icon: CodeIcon,
-                                                description: 'Powerful automation for code implementation'
-                                            }
-                                        ]}
-                                    />
-                                </div>
+                            <div className="composer-actions">
+                                {!composerInput && (
+                                    <div className="composer-mode-container">
+                                        <CustomSelect
+                                            value={composerMode}
+                                            onChange={setComposerMode}
+                                            options={[
+                                                {
+                                                    value: 'chat',
+                                                    label: 'Chat',
+                                                    icon: MessageSquare,
+                                                    description: 'Direct AI chat for questions and guidance'
+                                                },
+                                                {
+                                                    value: 'agent',
+                                                    label: 'Agent',
+                                                    icon: CodeIcon,
+                                                    description: 'Powerful automation for code implementation'
+                                                }
+                                            ]}
+                                        />
+                                    </div>
+                                )}
                                 <button className="send-btn" onClick={handleSubmitProposal}>
-                                    {isPlanning ? <Icon name={Square} size={14} fill="currentColor" /> : <Icon name={Send} size={16} />}
+                                    {(isPlanning || isAgentExecuting) ? <Icon name={Square} size={14} fill="currentColor" /> : <Icon name={Send} size={16} />}
                                 </button>
                             </div>
                         </div>
@@ -2924,6 +3127,47 @@ JSON FORMAT:
                                         )}
                                     </div>
 
+                                    <div className={`accordion ${expandedAccordions.has('startup-text') ? 'expanded' : ''}`}>
+                                        <div className="accordion-header" onClick={() => {
+                                            const newSet = new Set(expandedAccordions);
+                                            if (newSet.has('startup-text')) newSet.delete('startup-text');
+                                            else newSet.add('startup-text');
+                                            setExpandedAccordions(newSet);
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                                                <Icon name={Type} size={18} />
+                                                <span>Startup Text</span>
+                                            </div>
+                                            <Icon name={expandedAccordions.has('startup-text') ? ChevronUp : ChevronDown} size={18} />
+                                        </div>
+                                        {expandedAccordions.has('startup-text') && (
+                                            <div className="accordion-content">
+                                                <div style={{ display: 'flex', flexDirection: 'column', gap: 16, padding: '8px 4px' }}>
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                        <span style={{ fontSize: '13px', opacity: 0.8 }}>"Hello!" Color</span>
+                                                        <div className="color-input-wrapper">
+                                                            <input
+                                                                type="color"
+                                                                value={settings.startupHelloColor || '#e6edf3'}
+                                                                onChange={(e) => setSettings({ ...settings, startupHelloColor: e.target.value })}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                                        <span style={{ fontSize: '13px', opacity: 0.8 }}>Message Color</span>
+                                                        <div className="color-input-wrapper">
+                                                            <input
+                                                                type="color"
+                                                                value={settings.startupMsgColor || '#8b949e'}
+                                                                onChange={(e) => setSettings({ ...settings, startupMsgColor: e.target.value })}
+                                                            />
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
+
                                     <div className="modal-actions" style={{ display: 'flex', gap: 12, justifyContent: 'space-between', alignItems: 'center', marginTop: 32 }}>
                                         <button className="btn btn-outline" style={{ color: 'var(--accent-error)', borderColor: 'rgba(248, 81, 73, 0.2)' }} onClick={async () => {
                                             const defaults = {
@@ -2933,7 +3177,9 @@ JSON FORMAT:
                                                 aiTextColor: '#e6edf3',
                                                 chatBgImage: '',
                                                 userBubbleBgImage: '',
-                                                aiBubbleBgImage: ''
+                                                aiBubbleBgImage: '',
+                                                startupHelloColor: '#e6edf3',
+                                                startupMsgColor: '#8b949e'
                                             };
                                             const updatedSettings = { ...settings, ...defaults };
                                             setSettings(updatedSettings);

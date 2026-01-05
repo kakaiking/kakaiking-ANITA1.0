@@ -83,6 +83,8 @@ ipcMain.handle('get-settings', () => {
         userBubbleBgImage: store.get('userBubbleBgImage'),
         aiBubbleBgImage: store.get('aiBubbleBgImage'),
         togetherKey: store.get('togetherKey'),
+        startupHelloColor: store.get('startupHelloColor'),
+        startupMsgColor: store.get('startupMsgColor'),
     };
 });
 
@@ -98,6 +100,8 @@ ipcMain.handle('save-settings', (event, settings) => {
     if (settings.userBubbleBgImage !== undefined) store.set('userBubbleBgImage', settings.userBubbleBgImage);
     if (settings.aiBubbleBgImage !== undefined) store.set('aiBubbleBgImage', settings.aiBubbleBgImage);
     if (settings.togetherKey !== undefined) store.set('togetherKey', settings.togetherKey);
+    if (settings.startupHelloColor !== undefined) store.set('startupHelloColor', settings.startupHelloColor);
+    if (settings.startupMsgColor !== undefined) store.set('startupMsgColor', settings.startupMsgColor);
     return true;
 });
 
@@ -149,6 +153,12 @@ ipcMain.handle('create-folder', async (event, folderPath) => {
     if (!folderPath.startsWith(workspace)) throw new Error("Access denied");
     await fs.ensureDir(folderPath);
     return true;
+});
+
+ipcMain.handle('path-exists', async (event, filePath) => {
+    const workspace = store.get('workspacePath');
+    if (!filePath.startsWith(workspace)) throw new Error("Access denied");
+    return await fs.pathExists(filePath);
 });
 
 const runCommand = (command, terminalId, resolve) => {
@@ -313,10 +323,28 @@ ipcMain.handle('window-close', () => {
     mainWindow.close();
 });
 
-// Together AI Proxy
+// Together AI Proxy with Retry Logic
 ipcMain.handle('together-proxy-chat', async (event, { messages, model, stream, requestId }) => {
+    const fetchWithRetry = async (url, options, retries = 3, backoff = 1000) => {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                const error = await response.json().catch(() => ({}));
+                throw new Error(error.error?.message || `Together API error: ${response.status}`);
+            }
+            return response;
+        } catch (error) {
+            if (retries > 0 && (error.name === 'ConnectTimeoutError' || error.name === 'TypeError' || error.message.includes('timeout'))) {
+                console.warn(`Together Proxy Retry ${4 - retries}: ${error.message}`);
+                await new Promise(r => setTimeout(r, backoff));
+                return fetchWithRetry(url, options, retries - 1, backoff * 2);
+            }
+            throw error;
+        }
+    };
+
     try {
-        const response = await fetch("https://api.together.xyz/v1/chat/completions", {
+        const response = await fetchWithRetry("https://api.together.xyz/v1/chat/completions", {
             method: "POST",
             headers: {
                 "Authorization": `Bearer ${TOGETHER_MASTER_KEY}`,
@@ -329,16 +357,10 @@ ipcMain.handle('together-proxy-chat', async (event, { messages, model, stream, r
             })
         });
 
-        if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.error?.message || `Together API error: ${response.status}`);
-        }
-
         if (stream) {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
 
-            // Stream reading loop
             (async () => {
                 try {
                     while (true) {
