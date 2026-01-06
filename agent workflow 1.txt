@@ -1,0 +1,8 @@
+User: "I want a website."
+Agent: Asks questions (Clarify)
+User: "It's for a bakery."
+Agent: "Okay, a bakery website. Shall I plan?" (Handoff)
+User: "Add a contact form too."
+Agent: "Got it. Bakery website WITH a contact form. Shall I plan NOW?" (Handoff Loop)
+User: "Yes."
+Agent: Generates Implementation Plan

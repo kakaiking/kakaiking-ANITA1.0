@@ -210,6 +210,22 @@ const runCommand = (command, terminalId, resolve) => {
 // Shell
 ipcMain.handle('execute-command', (event, { terminalId, command }) => {
     return new Promise((resolve) => {
+        // Track CD commands from Agent execution too
+        const trimmedCmd = command.trim();
+        if (trimmedCmd.startsWith('cd ')) {
+            const workspace = store.get('workspacePath');
+            let cwd = terminalCwds.get(terminalId) || workspace;
+            const target = trimmedCmd.slice(3).trim().replace(/^["']|["']$/g, '');
+            try {
+                const newPath = path.resolve(cwd, target);
+                if (fs.existsSync(newPath) && fs.statSync(newPath).isDirectory()) {
+                    terminalCwds.set(terminalId, newPath);
+                }
+            } catch (e) {
+                console.error("Failed to resolve Agent CD path", e);
+            }
+        }
+
         const proc = runCommand(command, terminalId, resolve);
 
         const longRunningCmds = ['npm start', 'npm run dev', 'vite', 'serve', 'node '];
@@ -306,6 +322,24 @@ ipcMain.handle('save-chats', (event, chats) => {
     return true;
 });
 
+ipcMain.handle('get-active-chat-id', () => {
+    return store.get('activeChatId', null);
+});
+
+ipcMain.handle('save-active-chat-id', (event, id) => {
+    store.set('activeChatId', id);
+    return true;
+});
+
+ipcMain.handle('get-open-chat-ids', () => {
+    return store.get('openChatIds', []);
+});
+
+ipcMain.handle('save-open-chat-ids', (event, ids) => {
+    store.set('openChatIds', ids);
+    return true;
+});
+
 // Window Controls
 ipcMain.handle('window-minimize', () => {
     mainWindow.minimize();
@@ -323,19 +357,48 @@ ipcMain.handle('window-close', () => {
     mainWindow.close();
 });
 
+const togetherControllers = new Map();
+
+ipcMain.handle('abort-together-chat', (event, requestId) => {
+    const controller = togetherControllers.get(requestId);
+    if (controller) {
+        controller.abort();
+        togetherControllers.delete(requestId);
+        return true;
+    }
+    return false;
+});
+
 // Together AI Proxy with Retry Logic
 ipcMain.handle('together-proxy-chat', async (event, { messages, model, stream, requestId }) => {
     const fetchWithRetry = async (url, options, retries = 3, backoff = 1000) => {
         try {
             const response = await fetch(url, options);
             if (!response.ok) {
-                const error = await response.json().catch(() => ({}));
-                throw new Error(error.error?.message || `Together API error: ${response.status}`);
+                const errorData = await response.json().catch(() => ({}));
+                const errorMessage = errorData.error?.message || `Together API error: ${response.status}`;
+
+                // Retry on rate limits (429) or server errors (5xx)
+                if (retries > 0 && (response.status === 429 || response.status >= 500)) {
+                    console.warn(`Together Proxy Retry ${4 - retries} due to ${response.status}: ${errorMessage}`);
+                    await new Promise(r => setTimeout(r, backoff));
+                    return fetchWithRetry(url, options, retries - 1, backoff * 2);
+                }
+
+                throw new Error(errorMessage);
             }
             return response;
         } catch (error) {
-            if (retries > 0 && (error.name === 'ConnectTimeoutError' || error.name === 'TypeError' || error.message.includes('timeout'))) {
-                console.warn(`Together Proxy Retry ${4 - retries}: ${error.message}`);
+            if (error.name === 'AbortError') throw error;
+
+            // Retry on network-level errors/timeouts
+            if (retries > 0 && (
+                error.name === 'ConnectTimeoutError' ||
+                error.name === 'TypeError' ||
+                error.message.includes('timeout') ||
+                error.message.includes('fetch')
+            )) {
+                console.warn(`Together Proxy Retry ${4 - retries} due to Network Error: ${error.message}`);
                 await new Promise(r => setTimeout(r, backoff));
                 return fetchWithRetry(url, options, retries - 1, backoff * 2);
             }
@@ -343,18 +406,29 @@ ipcMain.handle('together-proxy-chat', async (event, { messages, model, stream, r
         }
     };
 
+    const controller = new AbortController();
+    togetherControllers.set(requestId, controller);
+
     try {
+        const userKey = store.get('togetherKey');
+        const finalKey = TOGETHER_MASTER_KEY || userKey;
+
+        if (!finalKey) {
+            throw new Error("Together AI key missing. Please provide one in settings.");
+        }
+
         const response = await fetchWithRetry("https://api.together.xyz/v1/chat/completions", {
             method: "POST",
             headers: {
-                "Authorization": `Bearer ${TOGETHER_MASTER_KEY}`,
+                "Authorization": `Bearer ${finalKey}`,
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
                 model: model.replace('together/', ''),
                 messages,
-                stream
-            })
+                stream: !!stream
+            }),
+            signal: controller.signal
         });
 
         if (stream) {
@@ -366,23 +440,37 @@ ipcMain.handle('together-proxy-chat', async (event, { messages, model, stream, r
                     while (true) {
                         const { done, value } = await reader.read();
                         if (done) break;
-                        const chunk = decoder.decode(value);
-                        if (mainWindow) {
+                        const chunk = decoder.decode(value, { stream: true });
+                        if (mainWindow && !mainWindow.isDestroyed()) {
                             mainWindow.webContents.send(`together-chunk-${requestId}`, chunk);
                         }
                     }
-                    if (mainWindow) mainWindow.webContents.send(`together-done-${requestId}`);
+                    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(`together-done-${requestId}`);
                 } catch (err) {
-                    if (mainWindow) mainWindow.webContents.send(`together-error-${requestId}`, err.message);
+                    if (err.name === 'AbortError') {
+                        console.log(`Together stream ${requestId} aborted`);
+                    } else {
+                        console.error("Stream reader error:", err);
+                        if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(`together-error-${requestId}`, err.message);
+                    }
+                } finally {
+                    reader.releaseLock();
+                    togetherControllers.delete(requestId);
                 }
             })();
 
             return { streaming: true };
         } else {
             const data = await response.json();
+            togetherControllers.delete(requestId);
             return data;
         }
     } catch (error) {
+        togetherControllers.delete(requestId);
+        if (error.name === 'AbortError') {
+            console.log(`Together proposal ${requestId} aborted`);
+            return { aborted: true };
+        }
         console.error("Together Proxy Error:", error);
         throw error;
     }

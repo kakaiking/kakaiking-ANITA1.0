@@ -137,6 +137,7 @@ body {
   font-size: 20px;
   background: linear-gradient(135deg, #58a6ff, #bc8cff);
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
   letter-spacing: -0.5px;
 }
@@ -2089,6 +2090,7 @@ body {
   margin-bottom: 32px;
   background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
   -webkit-background-clip: text;
+  background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
@@ -2400,6 +2402,9 @@ body {
   background: rgba(188, 140, 255, 0.03);
   font-size: 13px;
   animation: fadeIn 0.3s ease-out;
+  box-shadow: 0 4px 15px rgba(188, 140, 255, 0.05);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .thought-header {
@@ -2422,9 +2427,18 @@ body {
   line-height: 1.6;
   font-style: italic;
   white-space: pre-wrap;
-  max-height: 200px;
+  max-height: 250px;
   overflow-y: auto;
   scrollbar-width: thin;
+}
+
+.thought-content::-webkit-scrollbar {
+  width: 3px;
+}
+
+.thought-content::-webkit-scrollbar-thumb {
+  background: rgba(188, 140, 255, 0.2);
+  border-radius: 10px;
 }
 
 /* Markdown Streaming Adjustments */
@@ -2452,6 +2466,7 @@ body {
   padding: 12px;
   margin-top: 16px;
   animation: fadeIn 0.4s ease;
+  backdrop-filter: blur(8px);
 }
 
 .repair-analysis strong {
@@ -2471,4 +2486,73 @@ body {
   color: var(--text-secondary);
   max-height: 100px;
   overflow-y: auto;
+}
+
+/* Global Button Hover Enhancement */
+button:active {
+  transform: scale(0.98);
+}
+
+.send-btn {
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.send-btn:not(:disabled):hover {
+  filter: brightness(1.2) drop-shadow(0 0 5px var(--accent-primary));
+}
+
+/* Ensure proper positioning context for absolute children */
+.right-panel {
+  position: relative;
+}
+
+/* Chat Navigation Buttons - Consolidated & High Visibility */
+.chat-nav-buttons {
+  position: absolute;
+  bottom: 140px;
+  right: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 2000;
+  pointer-events: none;
+  /* Let clicks pass through the container area */
+}
+
+.chat-nav-btn {
+  pointer-events: auto;
+  /* Re-enable clicks on buttons */
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: var(--shadow-md);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0;
+  /* Hidden by default */
+  visibility: hidden;
+  /* Prevent clicks when hidden */
+  transform: translateY(10px);
+  backdrop-filter: blur(12px);
+}
+
+.chat-nav-btn.visible {
+  opacity: 0.9;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.chat-nav-btn.visible:hover {
+  opacity: 1;
+  background: var(--accent-primary);
+  color: white;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(88, 166, 255, 0.4);
+  border-color: var(--accent-primary);
 }

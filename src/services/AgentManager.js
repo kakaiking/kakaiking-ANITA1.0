@@ -9,13 +9,27 @@ export class AgentManager {
     async createProposal(goal) {
         this.addLog(`Planner: Analyzing goal - ${goal}`);
 
-        const prompt = `As an expert coding agent, what is the best way to fulfill this user request: ${goal}? 
-    Consider architecture, files to create/modify, and dependencies. 
-    Respond ONLY with a JSON object in this format: 
+        const prompt = `As an expert coding agent, analyze this user request: ${goal}.
+    
+    INTERACTION PROTOCOL:
+    1. GATHER INFO: If vague, ask questions.
+    2. CONFIRM: If requirements are clear, DO NOT generate JSON yet. Summarize and ask: "Shall I generate the implementation plan?"
+    3. GENERATE: ONLY if user confirms, output the JSON below.
+    
+    STRICT JSON TEMPLATE (Only after confirmation):
     { "plan": "string describing plan", "tasks": [ { "id": 1, "description": "task description", "type": "file_edit|terminal|folder_create", "path": "relative path if file", "content": "initial content if file", "command": "command if terminal" } ] }`;
 
         const response = await this.ai.chat([{ role: "user", content: prompt }]);
         try {
+            // Check if response is plain text (not JSON)
+            if (!response.trim().startsWith('{')) {
+                // If it's plain text, we assume it's a question or conversation
+                return {
+                    isQuestion: true,
+                    message: response
+                };
+            }
+
             const proposal = JSON.parse(response.replace(/```json|```/g, "").trim());
             const session = {
                 id: Date.now(),
@@ -53,7 +67,7 @@ export class AgentManager {
                 } else if (task.type === 'terminal') {
                     const approved = await this.requestApproval(`Execute command: ${task.command}`);
                     if (approved) {
-                        const result = await window.api.executeCommand(task.command);
+                        const result = await window.api.executeCommand('t1', task.command);
                         if (result.success) {
                             this.addLog(`Command output: ${result.stdout}`);
                         } else {

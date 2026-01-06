@@ -11,7 +11,7 @@ export class AIService {
             headers: {
                 "Authorization": `Bearer ${this.apiKey}`,
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/google-deepmind/antigravity", // Optional
+                "HTTP-Referer": "https://github.com/kakaiking/anita", // Optional
                 "X-Title": "Anita IDE"
             },
             body: JSON.stringify({
@@ -25,17 +25,19 @@ export class AIService {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullText = "";
-
+            let partialLine = "";
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
 
-                const chunk = decoder.decode(value);
-                const lines = chunk.split("\n");
+                const chunk = decoder.decode(value, { stream: true });
+                const text = partialLine + chunk;
+                const lines = text.split("\n");
+                partialLine = lines.pop();
 
                 for (const line of lines) {
                     if (line.startsWith("data: ")) {
-                        const data = line.slice(6);
+                        const data = line.slice(6).trim();
                         if (data === "[DONE]") continue;
                         try {
                             const json = JSON.parse(data);

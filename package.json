@@ -2,22 +2,44 @@
     "name": "anita",
     "version": "1.0.0",
     "description": "Agentic AI Coding IDE",
+    "author": "Anita User",
     "main": "main.js",
     "scripts": {
         "start": "electron .",
-        "dev": "electron ."
+        "dev": "electron .",
+        "dist": "electron-builder --win portable"
+    },
+    "build": {
+        "appId": "com.anita.app",
+        "productName": "Anita",
+        "directories": {
+            "output": "dist"
+        },
+        "win": {
+            "icon": "assets/logo.png",
+            "target": [
+                "portable"
+            ]
+        },
+        "files": [
+            "**/*",
+            "!dist/**",
+            "!node_modules/**/test/**",
+            "!node_modules/**/docs/**"
+        ]
     },
     "dependencies": {
+        "@monaco-editor/react": "^4.6.0",
         "electron-store": "^8.1.0",
         "fs-extra": "^11.1.1",
-        "openai": "^4.20.1",
+        "lucide-react": "^0.292.0",
         "monaco-editor": "^0.44.0",
+        "openai": "^4.20.1",
         "react": "^18.2.0",
-        "react-dom": "^18.2.0",
-        "@monaco-editor/react": "^4.6.0",
-        "lucide-react": "^0.292.0"
+        "react-dom": "^18.2.0"
     },
     "devDependencies": {
-        "electron": "^27.0.0"
+        "electron": "^27.0.0",
+        "electron-builder": "^24.13.3"
     }
 }

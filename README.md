@@ -106,3 +106,13 @@ Anita doesn't just chat; it executes. It uses a sophisticated **Planner-Coder-Te
 Contributions are welcome! Please feel free to submit a Pull Request or open an issue for feature requests.
 
 *Developed with ❤️ by kakaiking*
+
+---
+
+## ❓ Troubleshooting
+
+### Multiple Application Windows
+If the application opens in multiple windows or seems to duplicate itself:
+- Check your terminal or command prompt. If you have `npm start` running in multiple tabs or windows, each one will launch a separate instance of Anita.
+- Ensure only one `npm start` process is active at a time.
+- If you launch `npm start` from within Anita's own integrated terminal, it will spawn a nested instance. Avoid this recursion by using the external terminal for the main app process.

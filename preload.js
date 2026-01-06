@@ -34,6 +34,10 @@ contextBridge.exposeInMainWorld('api', {
     saveSessions: (sessions) => ipcRenderer.invoke('save-sessions', sessions),
     getChats: () => ipcRenderer.invoke('get-chats'),
     saveChats: (chats) => ipcRenderer.invoke('save-chats', chats),
+    getActiveChatId: () => ipcRenderer.invoke('get-active-chat-id'),
+    saveActiveChatId: (id) => ipcRenderer.invoke('save-active-chat-id', id),
+    getOpenChatIds: () => ipcRenderer.invoke('get-open-chat-ids'),
+    saveOpenChatIds: (ids) => ipcRenderer.invoke('save-open-chat-ids', ids),
 
     // Window Controls
     minimize: () => ipcRenderer.invoke('window-minimize'),
@@ -45,6 +49,7 @@ contextBridge.exposeInMainWorld('api', {
 
     // Together Proxy
     togetherProxyChat: (data) => ipcRenderer.invoke('together-proxy-chat', data),
+    abortTogetherChat: (requestId) => ipcRenderer.invoke('abort-together-chat', requestId),
     onTogetherChunk: (requestId, callback) => {
         const listener = (event, chunk) => callback(chunk);
         ipcRenderer.on(`together-chunk-${requestId}`, listener);
